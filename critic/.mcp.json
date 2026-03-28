@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "critic": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/critic",
+      "args": ["serve"],
+      "env": {
+        "CRITIC_CONFIG": "${CLAUDE_PLUGIN_ROOT}/config.yaml"
+      }
+    }
+  }
+}

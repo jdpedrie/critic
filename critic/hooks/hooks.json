@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}/server\" && go build -o \"${CLAUDE_PLUGIN_ROOT}/bin/critic\" . 2>&1 || echo 'critic: build failed'"
+          }
+        ]
+      }
+    ]
+  }
+}

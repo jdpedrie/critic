@@ -1,0 +1,17 @@
+{
+  "name": "critic",
+  "owner": {
+    "name": "jdp"
+  },
+  "metadata": {
+    "description": "Multi-agent fiction review system"
+  },
+  "plugins": [
+    {
+      "name": "critic",
+      "source": "./critic",
+      "description": "Multi-agent fiction review system with Claude, Codex, and Gemini reviewers",
+      "version": "0.2.0"
+    }
+  ]
+}
