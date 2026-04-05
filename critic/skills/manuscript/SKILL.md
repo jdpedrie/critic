@@ -1,79 +1,124 @@
 ---
 name: manuscript
-description: Review the full manuscript at the book level using three independent models (Claude, Codex, Gemini), cross-review with session continuity, and synthesis. Use when the user wants feedback on the whole book — arc completion, pacing, character consistency, dangling threads, tonal drift.
+description: Review the full manuscript using Claude (with rejection pass), Codex, and an adversarial model. Cross-review, synthesis, save. Use when the user wants honest, agency-level feedback on the whole book.
 ---
 
 # Manuscript Review
 
 The vault path for all tool calls is: ${user_config.vault_path}
 
-Run a three-model manuscript review. Three independent reviews (Claude, Codex, Gemini), cross-review with session continuity, synthesis, save. Text-only — no world-building context. Runs non-interactively through all steps.
+Run the full manuscript review pipeline non-interactively. Two primary reviewers (Claude with rejection pass, Codex), one adversarial reviewer, cross-review, synthesis, save.
 
 ## Arguments
 
-$ARGUMENTS is optional. If provided, it can specify focus areas (e.g., "focus on pacing" or "just arcs and dangling threads").
+$ARGUMENTS is optional. If provided, it can specify focus areas.
 
 ## Workflow
 
 Run all steps without stopping for user input.
 
-### Step 0 — Prior Review Summary
+### Step 0 — Prior Review + Review Number
 
-Call `summarize-review` with prefix "manuscript-critic" and the vault path.
+Call these in parallel:
+- `summarize-review` with prefix "manuscript-critic" and the vault path
+- `next-review-number` with the vault path
 
-If a prior review exists, hold the summary for step 1. If "No prior review found.", skip passing it.
+Hold the prior review synthesis (if any) and the review number for subsequent steps.
 
 ### Step 1 — Independent Reviews
 
-Call ALL THREE manuscript review tools in parallel:
-- `review-manuscript-claude` with the vault path
-- `review-manuscript-codex` with the vault path
-- `review-manuscript-gemini` with the vault path
-- If a prior review summary exists, pass it as `prior_review_summary` to all three
+Call ALL available review tools in parallel:
+- `review-manuscript-claude-rejection` with the vault path (and prior_review_summary if available)
+- `review-manuscript-codex` with the vault path (and prior_review_summary if available)
+- `review-manuscript-grok` with the vault path (and prior_review_summary if available)
+- `review-manuscript-adversarial` with the vault path (no prior_review_summary — it gets the raw text only)
 
-Each tool returns JSON with `review` and `session_id`. Parse these to extract both fields.
+**Claude rejection tool** returns JSON with `review`, `rejection`, and `session_id`. Parse all three.
+**Codex tool** returns JSON with `review` and `session_id`.
+**Grok tool** returns JSON with `review` and `session_id`.
+**Adversarial tool** returns prose directly (no session — one-shot rejection framing).
 
-If `review-manuscript-gemini` is not available (tool not registered), run with just Claude and Codex.
+If any tool errors or is unavailable, proceed with the others. At least two of the three primary reviewers (Claude, Codex, Grok) must succeed to continue. The adversarial rejection pass is valuable but optional.
 
 ### Step 2 — Cross-Review
 
 Call `cross-review-manuscript` with:
-- `claude_review`: Claude's review text
+- `claude_review`: Claude's review text (not the rejection pass)
 - `codex_review`: Codex's review text
-- `gemini_review`: Gemini's review text (if available)
+- `gemini_review`: Grok's review text (pass via the gemini_review param — it's the third reviewer slot)
 - `claude_session_id`: Claude's session ID
 - `codex_session_id`: Codex's session ID
-- `gemini_session_id`: Gemini's session ID (if available)
+- `gemini_session_id`: Grok's session ID (pass via the gemini_session_id param)
 
-Each model resumes its session and rebuts the others' reviews.
+Do NOT include the adversarial rejection in cross-review. It feeds directly into synthesis as a one-way input.
 
 ### Step 3 — Synthesis
 
 Call the `synthesize` tool with:
-- `reviews`: JSON object mapping model names to their review text (e.g., {"claude": "...", "codex": "...", "gemini": "..."})
-- `rebuttals`: JSON object mapping model names to their rebuttal text
+- `reviews`: JSON object with "claude", "codex", "grok" keys mapping to their review text. Include the adversarial rejection as "adversarial". Include Claude's rejection pass as "claude_rejection".
+- `rebuttals`: JSON object mapping model names to their rebuttal text from the cross-review
+- `review_number`: the number from step 0
 
 ### Step 4 — Save
 
 Call `save-review` with:
 - `vault`: the vault path
 - `prefix`: "manuscript-critic"
-- `content`: a single markdown file containing:
-  1. The synthesis
-  2. `---` then `## Claude Review` followed by Claude's review
-  3. `---` then `## Codex Review` followed by Codex's review
-  4. `---` then `## Gemini Review` followed by Gemini's review (if available)
-  5. `---` then the full cross-review output
+- `content`: a single markdown file structured as:
+
+```
+[synthesis output here]
+
+<!-- RAW AGENT OUTPUTS BELOW — NOT INCLUDED IN FUTURE REVIEW CONTEXT -->
+
+# Claude Review
+
+[Claude's raw review]
+
+---
+
+# Claude Rejection Pass
+
+[Claude's rejection pass output]
+
+---
+
+# Codex Review
+
+[Codex's raw review]
+
+---
+
+# Grok Review
+
+[Grok's constructive review, if available]
+
+---
+
+# Adversarial Rejection
+
+[Adversarial rejection output, if available]
+
+---
+
+# Cross-Review
+
+[full cross-review output]
+```
+
+Use H1 (`#`) for agent section headings. The sentinel MUST be included exactly as shown.
 
 ### Step 5 — Present
 
-Tell the user where the file was saved, then present the synthesis in conversation.
+Tell the user where the file was saved and the review number. Present the synthesis in conversation. After the synthesis, separately highlight the rejection pass findings — these are the most important corrective signal.
 
 ## Important Notes
 
 - Run all steps without asking. Do not stop between rounds.
 - This reads the ENTIRE manuscript — story only, no world-building notes or plot outlines.
-- The manuscript may be incomplete. The reviewers handle partial manuscripts gracefully.
-- The cross-review uses session resumption — each model remembers its own review when challenging the others.
-- If Gemini is unavailable, fall back to two-model review (Claude + Codex only).
-- All outputs are prose. No JSON parsing needed on tool results except the initial review step (which wraps review + session_id).
+- The literary agent framing means all reviewers are evaluating for publishability, not providing encouragement.
+- Three primary reviewers: Claude (with automatic rejection pass), Codex, and Grok. Grok uses the same constructive framing but is less aligned, which produces different observations.
+- The adversarial rejection is a separate, fourth input — Grok again but with a "this was rejected, explain why" prompt. It is deliberately harsh.
+- The synthesis weighs the rejection pass and adversarial rejection heavily as correctives against constructive bias.
+- If any reviewer errors or is unavailable, proceed with the others. Minimum: two of three primary reviewers.
+- All outputs are prose except the initial review steps (which wrap review + session_id in JSON).

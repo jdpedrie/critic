@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	VaultPath string      `yaml:"-"`
-	Models    ModelConfig  `yaml:"models"`
-	Claude   ClaudeConfig `yaml:"claude"`
-	Codex    CodexConfig  `yaml:"codex"`
-	Gemini   GeminiConfig `yaml:"gemini"`
-	Review   ReviewConfig `yaml:"review"`
-	Memory   MemoryConfig `yaml:"memory"`
+	VaultPath    string            `yaml:"-"`
+	Models       ModelConfig       `yaml:"models"`
+	Claude       ClaudeConfig      `yaml:"claude"`
+	Codex        CodexConfig       `yaml:"codex"`
+	Gemini       GeminiConfig      `yaml:"gemini"`
+	Adversarial  AdversarialConfig `yaml:"adversarial"`
+	Review       ReviewConfig      `yaml:"review"`
+	Memory       MemoryConfig      `yaml:"memory"`
 }
 
 type ModelConfig struct {
@@ -41,6 +42,13 @@ type GeminiConfig struct {
 	Enabled bool
 }
 
+type AdversarialConfig struct {
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"`
+	APIKey  string `yaml:"api_key"`
+	Enabled bool
+}
+
 type ReviewConfig struct {
 	MaxIssues          int    `yaml:"max_issues"`
 	MaxNewIssuesRound2 int    `yaml:"max_new_issues_round2"`
@@ -56,7 +64,7 @@ type MemoryConfig struct {
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
 		Claude: ClaudeConfig{Model: "claude-sonnet-4-6"},
-		Codex:  CodexConfig{Model: "gpt-5.4-codex"},
+		Codex:  CodexConfig{Model: "gpt-5.3-codex"},
 		Gemini: GeminiConfig{Model: "gemini-2.5-flash"},
 		Models: ModelConfig{
 			TextAnalytical:  "claude",
@@ -99,6 +107,12 @@ func LoadConfig(path string) (*Config, error) {
 	if v := settingOrEnv(ps, "gemini_model"); v != "" {
 		cfg.Gemini.Model = v
 	}
+	if v := settingOrEnv(ps, "adversarial_base_url"); v != "" {
+		cfg.Adversarial.BaseURL = v
+	}
+	if v := settingOrEnv(ps, "adversarial_model"); v != "" {
+		cfg.Adversarial.Model = v
+	}
 
 	// Vault path
 	if v := settingOrEnv(ps, "vault_path"); v != "" {
@@ -109,6 +123,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Claude.Enabled = settingOrEnvBool(ps, "claude_enabled", true)
 	cfg.Codex.Enabled = settingOrEnvBool(ps, "codex_enabled", true)
 	cfg.Gemini.Enabled = settingOrEnvBool(ps, "gemini_enabled", true)
+	cfg.Adversarial.Enabled = settingOrEnvBool(ps, "adversarial_enabled", true)
 
 	return cfg, nil
 }

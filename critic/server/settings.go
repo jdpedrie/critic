@@ -71,7 +71,11 @@ func makeWriteSettingHandler() server.ToolHandlerFunc {
 		"openai_api_key":  true,
 		"gemini_enabled":  true,
 		"gemini_model":    true,
-		"gemini_api_key":  true,
+		"gemini_api_key":        true,
+		"adversarial_enabled":   true,
+		"adversarial_base_url":  true,
+		"adversarial_model":     true,
+		"adversarial_api_key":   true,
 	}
 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

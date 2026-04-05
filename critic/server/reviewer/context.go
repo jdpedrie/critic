@@ -13,13 +13,28 @@ func WithStyleGuide(styleGuide, context string) string {
 	return "=== STYLE GUIDE ===\n\n" + styleGuide + "\n\n" + context
 }
 
+// WithKnownIssues prepends the known issues file to a context string, if present.
+func WithKnownIssues(issues, context string) string {
+	if issues == "" {
+		return context
+	}
+	return "=== KNOWN ISSUES (DEFERRED) ===\nThe following issues have been acknowledged by the author and deferred. Only re-raise if the issue has escalated in importance due to new text.\n\n" + issues + "\n\n" + context
+}
+
+// WithPageInfo prepends page count information to a context string.
+func WithPageInfo(inputPages, totalPages int, context string) string {
+	return fmt.Sprintf("=== MANUSCRIPT INFO ===\nPages in this input: ~%d (at 300 words/page)\nTotal manuscript pages: ~%d\n\n%s", inputPages, totalPages, context)
+}
+
 // BuildTextOnlyContext builds the user prompt for text-only reviewers (analytical, immersive).
-func BuildTextOnlyContext(chapter string, priorChapters []string) string {
+func BuildTextOnlyContext(chapter string, priorSummaries []struct{ Name, Content string }) string {
 	var b strings.Builder
 
-	if len(priorChapters) > 0 {
-		for i, ch := range priorChapters {
-			fmt.Fprintf(&b, "=== PRIOR CHAPTER %d ===\n\n%s\n\n", i+1, ch)
+	if len(priorSummaries) > 0 {
+		b.WriteString("=== PRIOR CHAPTER SUMMARIES ===\n")
+		b.WriteString("(You may request the full text of any chapter if you need more detail.)\n\n")
+		for _, s := range priorSummaries {
+			fmt.Fprintf(&b, "--- %s ---\n%s\n\n", s.Name, s.Content)
 		}
 	}
 

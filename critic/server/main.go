@@ -38,8 +38,13 @@ func main() {
 	// API key resolution: settings file > CLAUDE_PLUGIN_OPTION_ env > system auth
 	var claudeAgent agent.Agent
 	if cfg.Claude.Enabled {
-		claudeAgent = agent.NewClaude(cfg.Claude.Model, settingOrEnv(ps, "anthropic_api_key"))
+		ca := agent.NewClaude(cfg.Claude.Model, settingOrEnv(ps, "anthropic_api_key"))
+		ca.VaultPath = settingOrEnv(ps, "vault_path")
+		claudeAgent = ca
 	}
+
+	// Set vault path for prompt overrides
+	reviewer.VaultPath = settingOrEnv(ps, "vault_path")
 
 	var codexAgent agent.Agent
 	if cfg.Codex.Enabled {
@@ -47,17 +52,21 @@ func main() {
 	}
 
 	var geminiAgent agent.Agent
-	if cfg.Gemini.Enabled && cfg.Gemini.Model != "" {
-		geminiKey := settingOrEnv(ps, "gemini_api_key")
-		if geminiKey == "" {
-			geminiKey = os.Getenv("GEMINI_API_KEY")
+	if cfg.Gemini.Enabled {
+		geminiAgent = agent.NewGemini(cfg.Gemini.Model)
+	}
+
+	var adversarialAgent agent.Agent
+	if cfg.Adversarial.Enabled && cfg.Adversarial.BaseURL != "" && cfg.Adversarial.Model != "" {
+		apiKey := settingOrEnv(ps, "adversarial_api_key")
+		if apiKey == "" {
+			apiKey = cfg.Adversarial.APIKey
 		}
-		g, err := agent.NewGemini(cfg.Gemini.Model, geminiKey)
-		if err != nil {
-			log.Printf("gemini agent unavailable: %v (gemini tools will be disabled)", err)
-		} else {
-			geminiAgent = g
-		}
+		adversarialAgent = agent.NewOpenAICompat(
+			cfg.Adversarial.BaseURL,
+			apiKey,
+			cfg.Adversarial.Model,
+		)
 	}
 
 	// agentFor maps config model type names to agent instances.
@@ -153,9 +162,10 @@ func main() {
 	// synthesize (no vault needed — works on JSON inputs only)
 	s.AddTool(
 		mcp.NewTool("synthesize",
-			mcp.WithDescription("Synthesize all reviews and rebuttals into a readable markdown report."),
+			mcp.WithDescription("Synthesize all reviews and rebuttals into a readable markdown report with numbered issue IDs."),
 			mcp.WithString("reviews", mcp.Required(), mcp.Description("JSON object mapping role names to review JSON strings")),
 			mcp.WithString("rebuttals", mcp.Description("JSON object mapping pair names to rebuttal JSON strings")),
+			mcp.WithNumber("review_number", mcp.Description("Review sequence number for issue IDs (e.g. 3 → ISSUE-003-01). If omitted, defaults to 0.")),
 		),
 		makeSynthesizeHandler(cfg, agentFor(cfg.Models.Synthesizer)),
 	)
@@ -205,6 +215,7 @@ func main() {
 	}
 
 	// review-manuscript-gemini
+	// review-manuscript-gemini
 	if geminiAgent != nil {
 		s.AddTool(
 			mcp.NewTool("review-manuscript-gemini",
@@ -213,6 +224,41 @@ func main() {
 				mcp.WithString("prior_review_summary", mcp.Description("Summary of the previous review. The reviewer will assess whether prior issues were addressed.")),
 			),
 			makeManuscriptHandler(geminiAgent),
+		)
+	}
+
+	// review-manuscript-claude-rejection
+	if claudeAgent != nil {
+		s.AddTool(
+			mcp.NewTool("review-manuscript-claude-rejection",
+				mcp.WithDescription("Review the full manuscript using Claude, then automatically run a rejection pass in the same session. Returns both the review and the rejection analysis."),
+				vaultParam,
+				mcp.WithString("prior_review_summary", mcp.Description("Summary of the previous review.")),
+			),
+			makeManuscriptRejectionHandler(claudeAgent),
+		)
+	}
+
+	// review-manuscript-grok (constructive review using the adversarial model)
+	if adversarialAgent != nil {
+		s.AddTool(
+			mcp.NewTool("review-manuscript-grok",
+				mcp.WithDescription("Review the full manuscript at the book level using the adversarial model (e.g., Grok) as a constructive reviewer. Same literary agent framing as Claude/Codex but from a less aligned model."),
+				vaultParam,
+				mcp.WithString("prior_review_summary", mcp.Description("Summary of the previous review.")),
+			),
+			makeManuscriptHandler(adversarialAgent),
+		)
+	}
+
+	// review-manuscript-adversarial (rejection framing)
+	if adversarialAgent != nil {
+		s.AddTool(
+			mcp.NewTool("review-manuscript-adversarial",
+				mcp.WithDescription("Adversarial manuscript review — assumes the manuscript was rejected and explains why. Uses a separate model (e.g., Grok, DeepSeek) for a less aligned perspective."),
+				vaultParam,
+			),
+			makeAdversarialManuscriptHandler(adversarialAgent),
 		)
 	}
 
@@ -259,6 +305,129 @@ func main() {
 			mcp.WithString("context", mcp.Description("Optional context — a passage, diff, or background information")),
 		),
 		makeConsultHandler(codexAgent, geminiAgent),
+	)
+
+	// list-chapters
+	s.AddTool(
+		mcp.NewTool("list-chapters",
+			mcp.WithDescription("List all chapter names in the vault's story/ directory."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			names, err := v.ListChapterNames()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("list chapters: %v", err)), nil
+			}
+			return mcp.NewToolResultText(strings.Join(names, "\n")), nil
+		},
+	)
+
+	// summarize-chapter
+	s.AddTool(
+		mcp.NewTool("summarize-chapter",
+			mcp.WithDescription("Read a single chapter and generate a summary. Returns the chapter text for the agent to summarize."),
+			vaultParam,
+			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter filename (e.g. chapter-01)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			chapter, _ := req.RequireString("chapter")
+			text, err := v.ReadChapter(chapter)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read chapter: %v", err)), nil
+			}
+			pages := vault.PageCount(text)
+			return mcp.NewToolResultText(fmt.Sprintf("Chapter: %s (~%d pages)\n\n%s", chapter, pages, text)), nil
+		},
+	)
+
+	// write-summary
+	s.AddTool(
+		mcp.NewTool("write-summary",
+			mcp.WithDescription("Write a chapter summary to summary/<chapter-name>.md in the vault."),
+			vaultParam,
+			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter name (e.g. chapter-01)")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("The summary content to write")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			chapter, _ := req.RequireString("chapter")
+			content, _ := req.RequireString("content")
+			if err := v.WriteSummary(chapter, content); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("write summary: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Saved summary/%s.md", chapter)), nil
+		},
+	)
+
+	// read-issues
+	s.AddTool(
+		mcp.NewTool("read-issues",
+			mcp.WithDescription("Read the issues.md file from the vault root. Contains known issues deferred for later resolution."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			content := v.ReadIssues()
+			if content == "" {
+				return mcp.NewToolResultText("No issues.md file found."), nil
+			}
+			return mcp.NewToolResultText(content), nil
+		},
+	)
+
+	// append-issue
+	s.AddTool(
+		mcp.NewTool("append-issue",
+			mcp.WithDescription("Add a deferred issue to issues.md under a heading (e.g. 'General', 'Chapter 3'). Creates the file and heading if needed."),
+			vaultParam,
+			mcp.WithString("heading", mcp.Required(), mcp.Description("Section heading (e.g. General, Chapter 3)")),
+			mcp.WithString("entry", mcp.Required(), mcp.Description("The issue entry text (should include the issue ID if from a review)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			heading, _ := req.RequireString("heading")
+			entry, _ := req.RequireString("entry")
+			if err := v.AppendIssue(heading, entry); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("append issue: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Added to issues.md under \"%s\"", heading)), nil
+		},
+	)
+
+	// next-review-number
+	s.AddTool(
+		mcp.NewTool("next-review-number",
+			mcp.WithDescription("Get the next global review number. Use before synthesis to get the correct issue ID prefix."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			num := v.NextReviewNumber()
+			return mcp.NewToolResultText(fmt.Sprintf("%d", num)), nil
+		},
+	)
+
+	// read-issue
+	s.AddTool(
+		mcp.NewTool("read-issue",
+			mcp.WithDescription("Read a specific issue from a review file by its ISSUE-NNN-NN ID. The review number is extracted from the ID."),
+			vaultParam,
+			mcp.WithString("issue_id", mcp.Required(), mcp.Description("Issue ID (e.g. ISSUE-003-01 or 003-01)")),
+		),
+		makeReadIssueHandler(),
+	)
+
+	// add-rebuttal
+	s.AddTool(
+		mcp.NewTool("add-rebuttal",
+			mcp.WithDescription("Add an author rebuttal to a specific issue in a review file. The rebuttal is inserted inline after the issue."),
+			vaultParam,
+			mcp.WithString("issue_id", mcp.Required(), mcp.Description("Issue ID (e.g. ISSUE-003-01 or 003-01)")),
+			mcp.WithString("rebuttal", mcp.Required(), mcp.Description("The author's rebuttal text")),
+		),
+		makeAddRebuttalHandler(),
 	)
 
 	// read-settings
@@ -310,17 +479,15 @@ func makeReviewHandler(cfg *Config, role reviewer.Role, a agent.Agent) server.To
 			return mcp.NewToolResultError(fmt.Sprintf("read chapter: %v", err)), nil
 		}
 
-		priorCount := cfg.Review.PriorChapters
-		if n, ok := req.GetArguments()["prior_chapters"].(float64); ok {
-			priorCount = int(n)
+		namedSummaries, _ := v.ReadPriorSummaries(chapter)
+		var summaries []struct{ Name, Content string }
+		for _, s := range namedSummaries {
+			summaries = append(summaries, struct{ Name, Content string }{s.Name, s.Content})
 		}
 
-		priors, err := v.ReadPriorChapters(chapter, priorCount)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("read prior chapters: %v", err)), nil
-		}
-
-		userPrompt := reviewer.WithStyleGuide(v.ReadStyleGuide(), reviewer.BuildTextOnlyContext(text, priors))
+		userPrompt := reviewer.BuildTextOnlyContext(text, summaries)
+		userPrompt = reviewer.WithStyleGuide(v.ReadStyleGuide(), userPrompt)
+		userPrompt = reviewer.WithPageInfo(vault.PageCount(text), v.TotalPageCount(), userPrompt)
 
 		r := reviewer.New(role, a, cfg.Review.MaxIssues)
 		out, err := r.Review(ctx, userPrompt)
@@ -351,7 +518,9 @@ func makeFullContextReviewHandler(cfg *Config, role reviewer.Role, a agent.Agent
 			plot = make(map[string]string)
 		}
 
-		userPrompt := reviewer.WithStyleGuide(v.ReadStyleGuide(), reviewer.BuildFullContext(text, canon, plot))
+		userPrompt := reviewer.BuildFullContext(text, canon, plot)
+		userPrompt = reviewer.WithStyleGuide(v.ReadStyleGuide(), userPrompt)
+		userPrompt = reviewer.WithPageInfo(vault.PageCount(text), v.TotalPageCount(), userPrompt)
 
 		r := reviewer.New(role, a, cfg.Review.MaxIssues)
 		out, err := r.Review(ctx, userPrompt)
@@ -420,7 +589,12 @@ func makeSynthesizeHandler(cfg *Config, a agent.Agent) server.ToolHandlerFunc {
 			}
 		}
 
-		out, err := reviewer.Synthesize(ctx, a, reviews, rebuttals)
+		reviewNum := 0
+		if n, ok := req.GetArguments()["review_number"].(float64); ok {
+			reviewNum = int(n)
+		}
+
+		out, err := reviewer.Synthesize(ctx, a, reviews, rebuttals, reviewNum)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("synthesis failed: %v", err)), nil
 		}
@@ -444,7 +618,7 @@ func makeExtractCanonHandler(cfg *Config, a agent.Agent) server.ToolHandlerFunc 
 			canon = make(map[string]string)
 		}
 
-		out, err := reviewer.ExtractCanon(ctx, a, text, canon, v.ReadStyleGuide())
+		out, err := reviewer.ExtractCanon(ctx, a, text, canon, v.ReadStyleGuide(), vault.PageCount(text), v.TotalPageCount())
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("extraction failed: %v", err)), nil
 		}
@@ -481,7 +655,13 @@ func makeDownstreamHandler(cfg *Config, a agent.Agent) server.ToolHandlerFunc {
 		canon, _ := v.ReadCanonFiles()
 		plot, _ := v.ReadPlotFiles()
 
-		out, err := reviewer.AssessDownstream(ctx, a, edited, downstream, canon, plot, v.ReadStyleGuide())
+		// Count pages for the edited chapter + all downstream chapters
+		downstreamWords := 0
+		for _, ch := range downstream {
+			downstreamWords += len(strings.Fields(ch.Content))
+		}
+		inputPages := vault.PageCount(edited) + (downstreamWords / 300)
+		out, err := reviewer.AssessDownstream(ctx, a, edited, downstream, canon, plot, v.ReadStyleGuide(), inputPages, v.TotalPageCount())
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("downstream assessment failed: %v", err)), nil
 		}
@@ -509,7 +689,7 @@ func makeManuscriptHandler(a agent.Agent) server.ToolHandlerFunc {
 			priorSummary = s
 		}
 
-		out, sessionID, err := reviewer.ReviewManuscript(ctx, a, chapters, priorSummary, v.ReadStyleGuide())
+		out, sessionID, err := reviewer.ReviewManuscript(ctx, a, chapters, priorSummary, v.ReadStyleGuide(), v.ReadIssues(), v.TotalPageCount())
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("manuscript review failed: %v", err)), nil
 		}
@@ -524,12 +704,75 @@ func makeManuscriptHandler(a agent.Agent) server.ToolHandlerFunc {
 	}
 }
 
+func makeManuscriptRejectionHandler(a agent.Agent) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		v := vaultFromReq(req)
+
+		namedChapters, err := v.ReadAllChapters()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
+		}
+
+		var chapters []struct{ Name, Content string }
+		for _, ch := range namedChapters {
+			chapters = append(chapters, struct{ Name, Content string }{ch.Name, ch.Content})
+		}
+
+		priorSummary := ""
+		if s, ok := req.GetArguments()["prior_review_summary"].(string); ok {
+			priorSummary = s
+		}
+
+		review, rejection, sessionID, err := reviewer.ReviewManuscriptWithRejection(ctx, a, chapters, priorSummary, v.ReadStyleGuide(), v.ReadIssues(), v.TotalPageCount())
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("manuscript review failed: %v", err)), nil
+		}
+
+		result := map[string]string{
+			"review":     review,
+			"rejection":  rejection,
+			"session_id": sessionID,
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func makeAdversarialManuscriptHandler(a agent.Agent) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		v := vaultFromReq(req)
+
+		namedChapters, err := v.ReadAllChapters()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
+		}
+
+		var chapters []struct{ Name, Content string }
+		for _, ch := range namedChapters {
+			chapters = append(chapters, struct{ Name, Content string }{ch.Name, ch.Content})
+		}
+
+		prompt := reviewer.AdversarialManuscriptPrompt(v.Root)
+		userPrompt := reviewer.WithPageInfo(v.TotalPageCount(), v.TotalPageCount(),
+			reviewer.WithStyleGuide(v.ReadStyleGuide(), reviewer.BuildManuscriptContext(chapters)))
+
+		out, err := a.Run(ctx, prompt, userPrompt)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("adversarial review failed: %v", err)), nil
+		}
+
+		return mcp.NewToolResultText(out), nil
+	}
+}
+
 func makeSummarizeReviewHandler(a agent.Agent) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v := vaultFromReq(req)
 		prefix, _ := req.RequireString("prefix")
 
-		prior, err := v.ReadLatestReview(prefix)
+		// Read only the synthesis portion (above the sentinel), which includes
+		// issue IDs and any author rebuttals inline.
+		prior, err := v.ReadLatestReviewSynthesis(prefix)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("read prior review: %v", err)), nil
 		}
@@ -537,23 +780,7 @@ func makeSummarizeReviewHandler(a agent.Agent) server.ToolHandlerFunc {
 			return mcp.NewToolResultText("No prior review found."), nil
 		}
 
-		prompt := `Summarize this fiction manuscript review into a concise bullet list.
-For each issue or observation, include:
-- The issue ID if one was given
-- One sentence describing the finding
-- Its severity or importance
-
-Keep it under 500 words. This summary will be given to reviewers so they can
-check whether the issues have been addressed in the current manuscript.
-
-Do NOT add commentary — just distill the findings.`
-
-		summary, err := a.Run(ctx, prompt, prior)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("summarize failed: %v", err)), nil
-		}
-
-		return mcp.NewToolResultText(summary), nil
+		return mcp.NewToolResultText(prior), nil
 	}
 }
 
@@ -661,18 +888,140 @@ Do not hedge or disclaim. Give your honest assessment.`
 	}
 }
 
+func normalizeIssueID(id string) string {
+	id = strings.TrimSpace(id)
+	// Accept "003-01" or "ISSUE-003-01"
+	if !strings.HasPrefix(strings.ToUpper(id), "ISSUE-") {
+		id = "ISSUE-" + id
+	}
+	return strings.ToUpper(id)
+}
+
+func makeReadIssueHandler() server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		v := vaultFromReq(req)
+		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
+
+		// Extract review number from issue ID (ISSUE-003-01 → 3)
+		var reviewNum int
+		fmt.Sscanf(issueID, "ISSUE-%d-", &reviewNum)
+		if reviewNum == 0 {
+			return mcp.NewToolResultError("could not parse review number from issue ID"), nil
+		}
+
+		content, _, err := v.ReadReviewByNumber(reviewNum)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("read review: %v", err)), nil
+		}
+
+		// Find the issue section — look for the heading containing the issue ID
+		lines := strings.Split(content, "\n")
+		var issueLines []string
+		capturing := false
+		for _, line := range lines {
+			if strings.Contains(strings.ToUpper(line), issueID) && strings.HasPrefix(strings.TrimSpace(line), "#") {
+				capturing = true
+				issueLines = append(issueLines, line)
+				continue
+			}
+			if capturing {
+				// Stop at the next heading of same or higher level, or sentinel
+				trimmed := strings.TrimSpace(line)
+				if (strings.HasPrefix(trimmed, "### ISSUE-") || strings.HasPrefix(trimmed, "## ")) && len(issueLines) > 0 {
+					break
+				}
+				if strings.Contains(line, "RAW AGENT OUTPUTS BELOW") {
+					break
+				}
+				issueLines = append(issueLines, line)
+			}
+		}
+
+		if len(issueLines) == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("issue %s not found in review #%03d", issueID, reviewNum)), nil
+		}
+
+		return mcp.NewToolResultText(strings.Join(issueLines, "\n")), nil
+	}
+}
+
+func makeAddRebuttalHandler() server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		v := vaultFromReq(req)
+		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
+		rebuttal, _ := req.RequireString("rebuttal")
+
+		var reviewNum int
+		fmt.Sscanf(issueID, "ISSUE-%d-", &reviewNum)
+		if reviewNum == 0 {
+			return mcp.NewToolResultError("could not parse review number from issue ID"), nil
+		}
+
+		content, filename, err := v.ReadReviewByNumber(reviewNum)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("read review: %v", err)), nil
+		}
+
+		// Find the issue heading and insert the rebuttal after the issue block
+		lines := strings.Split(content, "\n")
+		var result []string
+		issueFound := false
+		capturing := false
+		inserted := false
+
+		rebuttalBlock := fmt.Sprintf("\n> [!quote] Author Rebuttal (%s)\n> %s\n",
+			issueID,
+			strings.ReplaceAll(strings.TrimSpace(rebuttal), "\n", "\n> "))
+
+		for i, line := range lines {
+			if !issueFound && strings.Contains(strings.ToUpper(line), issueID) && strings.HasPrefix(strings.TrimSpace(line), "#") {
+				issueFound = true
+				capturing = true
+				result = append(result, line)
+				continue
+			}
+			if capturing && !inserted {
+				trimmed := strings.TrimSpace(line)
+				isNextSection := (strings.HasPrefix(trimmed, "### ISSUE-") || strings.HasPrefix(trimmed, "## ")) ||
+					strings.Contains(line, "RAW AGENT OUTPUTS BELOW")
+				isSeparator := trimmed == "---"
+				if isNextSection || isSeparator || i == len(lines)-1 {
+					result = append(result, rebuttalBlock)
+					inserted = true
+					capturing = false
+				}
+			}
+			result = append(result, line)
+		}
+
+		if !issueFound {
+			return mcp.NewToolResultError(fmt.Sprintf("issue %s not found in review file", issueID)), nil
+		}
+		if !inserted {
+			// Issue was the last thing in the file
+			result = append(result, rebuttalBlock)
+		}
+
+		if err := v.WriteReviewFile(filename, strings.Join(result, "\n")); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("write review: %v", err)), nil
+		}
+
+		return mcp.NewToolResultText(fmt.Sprintf("Added rebuttal to %s in %s", issueID, filename)), nil
+	}
+}
+
 func makeSaveReviewHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v := vaultFromReq(req)
 		prefix, _ := req.RequireString("prefix")
 		content, _ := req.RequireString("content")
 
-		relPath, err := v.WriteReview(prefix, content)
+		relPath, reviewNum, err := v.WriteReview(prefix, content)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("save review: %v", err)), nil
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Saved to %s", relPath)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Saved to %s (review #%03d)", relPath, reviewNum)), nil
 	}
 }
 
