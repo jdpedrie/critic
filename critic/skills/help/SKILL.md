@@ -12,13 +12,14 @@ Present the following information to the user in a clear, readable format.
 
 | Skill | Description |
 |-------|-------------|
-| `/critic:manuscript` | Full manuscript review — Claude (with rejection pass), Codex, and Grok as primary reviewers, plus Grok adversarial. Cross-review, synthesis, save. |
+| `/critic:manuscript` | Full manuscript review with interactive setup (choose reviewers, Pi model, and which steps to run). Claude (subagent, with optional rejection pass), Codex, and Pi, with optional Pi adversarial pass, cross-review, synthesis, and save. |
 | `/critic:review <chapter>` | Chapter-level review with four roles: analytical, immersive, structural, adversarial. |
 | `/critic:downstream <chapter>` | Assess what breaks in later chapters after editing a chapter. |
 | `/critic:extract <chapter>` | Extract facts from a chapter and diff against world state. |
 | `/critic:summarize` | Generate summaries of all chapters into `summary/`. |
-| `/critic:consult <question>` | Get a second opinion from Codex/Gemini/Grok on a specific question. Also used proactively by Claude when a second opinion would help. |
+| `/critic:consult <question>` | Get a second opinion from Codex and Pi on a specific question. Also used proactively by Claude when a second opinion would help. |
 | `/critic:rebuttal <issue-id>` | Rebut or defer a review issue. Conversational — helps refine the response. |
+| `/critic:assess <issue-id> [question]` | Deep-dive investigation of a single issue against the full manuscript. Finds all occurrences of patterns, traces structural problems, optionally answers follow-up questions. |
 | `/critic:settings` | View and update plugin settings. |
 | `/critic:help` | This help text. |
 
@@ -31,13 +32,9 @@ Run `/critic:settings` to view or change settings. Settings persist across sessi
 ```
 /critic:settings                              — view all
 /critic:settings vault_path /path/to/vault    — set vault path
-/critic:settings claude_model claude-sonnet-4-6
-/critic:settings codex_model gpt-5.3-codex
-/critic:settings gemini_model gemini-2.5-flash
-/critic:settings adversarial_base_url https://api.x.ai/v1
-/critic:settings adversarial_model grok-3-mini
-/critic:settings adversarial_api_key <key>
-/critic:settings claude_enabled false         — disable a provider
+/critic:settings codex_enabled false          — disable a provider
+/critic:settings pi_provider google
+/critic:settings pi_model gemini-2.5-pro
 ```
 
 All available settings:
@@ -45,18 +42,14 @@ All available settings:
 | Setting | Description |
 |---------|-------------|
 | `vault_path` | Absolute path to your Obsidian vault |
-| `claude_enabled` | Enable/disable Claude (true/false) |
-| `claude_model` | Claude model name |
-| `anthropic_api_key` | Anthropic API key (omit for system auth) |
-| `codex_enabled` | Enable/disable Codex |
-| `codex_model` | Codex model name |
+| `codex_enabled` | Enable/disable Codex (true/false) |
+| `codex_model` | Codex model (leave empty to let the Codex CLI pick) |
 | `openai_api_key` | OpenAI API key (omit for Codex CLI login) |
-| `gemini_enabled` | Enable/disable Gemini |
-| `gemini_model` | Gemini model name |
-| `adversarial_enabled` | Enable/disable adversarial reviewer |
-| `adversarial_base_url` | OAI-compatible API endpoint |
-| `adversarial_model` | Model name for adversarial provider |
-| `adversarial_api_key` | API key for adversarial provider |
+| `pi_enabled` | Enable/disable Pi |
+| `pi_provider` | Default Pi provider: anthropic, openai, google |
+| `pi_model` | Default Pi model (skills may override per-call) |
+
+Claude is always available (it runs as a subagent within this cowork session). There's nothing to configure for Claude — its model is whatever cowork is running on.
 
 Settings can also be set in `config.yaml` in the plugin directory. Settings from `/critic:settings` override `config.yaml`.
 

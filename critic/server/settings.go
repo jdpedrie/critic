@@ -62,20 +62,13 @@ func makeReadSettingsHandler() server.ToolHandlerFunc {
 
 func makeWriteSettingHandler() server.ToolHandlerFunc {
 	validKeys := map[string]bool{
-		"vault_path":      true,
-		"claude_enabled":  true,
-		"claude_model":    true,
-		"anthropic_api_key": true,
-		"codex_enabled":   true,
-		"codex_model":     true,
-		"openai_api_key":  true,
-		"gemini_enabled":  true,
-		"gemini_model":    true,
-		"gemini_api_key":        true,
-		"adversarial_enabled":   true,
-		"adversarial_base_url":  true,
-		"adversarial_model":     true,
-		"adversarial_api_key":   true,
+		"vault_path":     true,
+		"codex_enabled":  true,
+		"codex_model":    true,
+		"openai_api_key": true,
+		"pi_enabled":     true,
+		"pi_provider":    true,
+		"pi_model":       true,
 	}
 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

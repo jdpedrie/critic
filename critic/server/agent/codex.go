@@ -27,17 +27,17 @@ func NewCodex(model, apiKey string) *Codex {
 }
 
 func (c *Codex) threadOpts() types.ThreadOptions {
-	return types.ThreadOptions{
-		Model:            c.Model,
+	opts := types.ThreadOptions{
 		SandboxMode:      types.SandboxModeReadOnly,
 		ApprovalPolicy:   types.ApprovalModeNever,
 		SkipGitRepoCheck: true,
 	}
-}
-
-func (c *Codex) Run(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-	text, _, err := c.runThread(ctx, c.client.StartThread(c.threadOpts()), systemPrompt+"\n\n---\n\n"+userPrompt)
-	return text, err
+	// Only set Model if explicitly configured. Otherwise let the Codex CLI
+	// pick whatever the active subscription supports.
+	if c.Model != "" {
+		opts.Model = c.Model
+	}
+	return opts
 }
 
 func (c *Codex) RunSession(ctx context.Context, systemPrompt, userPrompt string) (string, string, error) {

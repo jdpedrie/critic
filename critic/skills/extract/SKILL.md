@@ -1,73 +1,65 @@
 ---
 name: extract
-description: Extract ground truth facts from a chapter and compare against world state. Use when the user asks to extract canon, check consistency, or update world-building notes.
+description: Extract ground-truth facts from a chapter and diff against the world-state notes. Use when the user wants to update canon or check what new facts a chapter introduces.
 ---
 
 # Canon Extraction
 
-The vault path for all tool calls is: ${user_config.vault_path}
-
-Extract factual assertions from a chapter and diff them against the existing world state.
+The vault path is the user's configured vault. Call `read-settings` if needed.
 
 ## Arguments
 
-$ARGUMENTS should be a chapter name (e.g., "chapter-01") or a chapter filename.
+$ARGUMENTS = chapter name (e.g. `chapter-03`).
 
 ## Workflow
 
-### Step 1 — Extract
+### 1. Load context
 
-Call the `extract-canon` tool with the chapter name.
+- Read the chapter file from `<vault>/story/<chapter>.md` directly via Read
+- Read all `<vault>/world/` files (recursively) via Glob + Read
+- Read `<vault>/style.md` if it exists (passes through to the prompt)
 
-The tool returns a JSON object with a `facts` array. Each fact has:
-- `type`: character, relationship, location, timeline, rule
-- `entity`: the entity name
-- `claim`: what the chapter asserts
-- `source_passage`: quote from the chapter
-- `canon_status`: confirmed, new, or contradicts
-- `canon_reference`: path to the relevant canon file (if any)
-- `conflict_detail`: explanation (if contradicts)
+### 2. Compose the prompt
 
-### Step 2 — Present Results
+```
+system = get-prompt("agent-framing.md", vault: <vault>)
+       + get-prompt("canon-extraction.md", vault: <vault>)
 
-Group facts by status and present as readable text:
+user = "=== STYLE GUIDE ===\n\n<style.md contents>\n\n"  (if present)
+     + "=== EXISTING CANON ===\n\n<all world/ files concatenated with file headers>\n\n"
+     + "=== CHAPTER TO EXTRACT FROM ===\n\n<chapter text>"
+```
 
-**New Facts** (not yet in canon):
-For each, show the entity, claim, and source passage. Note which canon file it should be added to (or suggest creating a new one).
+### 3. Run
 
-**Confirmed** (matches existing canon):
-Brief summary — "X facts confirmed against existing canon."
+Spawn a `Task` subagent (general-purpose) with the system + user prompts. The subagent's output is the extraction report.
 
-**Contradictions** (conflicts with canon):
-For each, show:
-- What the chapter says (with quote)
-- What canon says (with file reference)
-- The nature of the conflict
+### 4. Present
 
-### Step 3 — Author Decisions
+Show the extraction report in the conversation. Group facts by status:
+- **New facts** — ask the user which to add to canon; help draft the entries
+- **Confirmed** — summarize briefly
+- **Contradictions** — for each, show chapter passage vs. canon, ask the user how to resolve
 
-Ask the user how to handle each category:
-- **New facts**: "Add these to canon? I can propose frontmatter and content for new or updated files."
-- **Contradictions**: "Which is correct — the chapter or the existing canon? Should I update the canon file or flag this as a chapter issue?"
+### 5. Apply (interactive)
 
-### Step 4 — Apply (if requested)
-
-For accepted updates, help the user write or update the canon files directly. Propose Obsidian-compatible markdown with frontmatter properties that work with Bases:
+For accepted updates, help the user draft frontmatter + content for the world files. Use Obsidian-style frontmatter so Bases queries work:
 
 ```markdown
 ---
 type: character
-name: Entity Name
+name: Kael
 status: active
-introduced: chapter-XX
-last_updated: chapter-XX
+introduced: chapter-01
+last_updated: chapter-03
 ---
 
-Freeform notes about the entity.
+Body text here.
 ```
 
-## Important Notes
+Do not auto-apply — always confirm with the user before writing.
 
-- Present source passages as blockquotes so the user can verify.
-- Do NOT auto-apply changes. Always present and ask first.
-- Precision over recall — it's better to miss a minor fact than to flag a false contradiction.
+## Notes
+
+- Precision over recall. If you're not confident a fact is in the chapter, don't include it.
+- Read the chapter directly. Do not use `summary/` files (out of date).

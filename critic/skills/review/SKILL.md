@@ -1,71 +1,85 @@
 ---
 name: review
-description: Run multi-agent fiction review on a chapter. Dispatches reviewer tools in parallel, runs cross-review, synthesizes into readable critique. Use when the user asks to review, critique, or get feedback on a chapter.
+description: Chapter-level multi-agent review. Spawns parallel reviewers (Claude subagents, Codex, Pi) for a single chapter with four role lenses (analytical, immersive, structural, adversarial). Use when the user asks to review a specific chapter.
 ---
 
-# Fiction Review
+# Chapter Review
 
-The vault path for all tool calls is: ${user_config.vault_path}
-
-Run a structured multi-agent review of the specified chapter using the critic MCP tools.
+The vault path is the user's configured vault. Call `read-settings` if you don't already know it.
 
 ## Arguments
 
-$ARGUMENTS should be a chapter name (e.g., "chapter-01") or a chapter filename.
+$ARGUMENTS = chapter name (e.g. `chapter-03` or `chapter-03.md`).
 
-## Workflow
+## Setup
 
-### Round 1 — Independent Reviews
+This skill does not prompt — it just runs. If the user wants to customize which reviewers run, they should use `/critic:manuscript` instead (which has the interactive setup) or edit the skill.
 
-Call ALL FOUR review tools in parallel using the Agent tool:
-- `review-analytical` with the chapter name
-- `review-immersive` with the chapter name
-- `review-structural` with the chapter name
-- `review-adversarial` with the chapter name
+## Execution
 
-Wait for all four to complete.
+### 1. Load context
 
-Present a brief summary to the user:
-- Total issue count across all reviewers
-- Breakdown by severity (critical / moderate / minor)
-- Any issues flagged by multiple reviewers (overlapping claims)
-- Notable strengths mentioned
+- Read the chapter file directly from `<vault>/story/<chapter>.md`
+- Read prior chapter summaries from `<vault>/summary/` (up to 2 chapters back). If no summaries exist, fall back to the prior raw chapters from `<vault>/story/`.
+- Read `<vault>/style.md` if it exists
+- Read `<vault>/issues.md` if it exists
+- For full-context roles only: gather `<vault>/world/` and `<vault>/plot/` files
 
-Then ask: **"Run cross-review, skip to synthesis, or re-run a specific reviewer?"**
+### 2. Compose system prompts
 
-### Round 2 — Cross-Review (if requested)
+For each role, call:
 
-Call the `cross-review` tool twice in parallel:
-1. Text-only pair: pass the analytical and immersive review outputs, with model_a="claude" and model_b="codex"
-2. Full-context pair: pass the structural and adversarial review outputs, with model_a="claude" and model_b="codex"
+```
+get-prompt(name: "agent-framing.md", vault: <vault>)
++ get-prompt(name: "review-base.md", vault: <vault>, vars: {Role: <role>, MaxIssues: 7})
++ get-prompt(name: "review-<role>.md", vault: <vault>)   // analytical/immersive/structural/adversarial-role
++ get-prompt(name: "verdict.md", vault: <vault>)
+```
 
-Present:
-- Number of agreements and disagreements per pair
-- Key contested points (summarize the disagreement, don't dump JSON)
+Roles:
+- `analytical` (text-only) → use `review-analytical.md`
+- `immersive` (text-only) → use `review-immersive.md`
+- `structural` (full context) → use `review-structural.md`
+- `adversarial` (full context) → use `review-adversarial-role.md`
 
-Then ask: **"Synthesize, or discuss specific points first?"**
+### 3. Run reviewers in parallel
 
-### Round 3 — Synthesis
+Default model mapping:
+- analytical → Claude subagent
+- immersive → Codex (invoke-codex)
+- structural → Claude subagent
+- adversarial → Pi (invoke-pi)
 
-Call the `synthesize` tool with:
-- `reviews`: JSON object mapping role names to their review JSON strings
-- `rebuttals`: JSON object mapping pair names to their rebuttal JSON strings (if cross-review was run)
+For each subagent (analytical, structural): use `Task` with the full system prompt and a user prompt containing the chapter text + style guide + issues + prior context.
 
-The synthesize tool returns a JSON object with a `markdown` field containing the full human-readable report.
+For external calls: `invoke-codex` / `invoke-pi` with the system prompt; user prompt holds the chapter + style/issues/prior context inline (no manuscript flag — this is chapter-scoped).
 
-**Present the markdown report directly in conversation.** This is the primary output.
+### 4. Cross-review (text pair, full-context pair)
 
-### After Synthesis
+Run pairwise rebuttals using `get-prompt("cross-review.md", vault, vars: {MaxNewIssues: 3})`:
+- analytical ↔ immersive
+- structural ↔ adversarial
 
-Offer the user these options:
-- **Discuss**: "Want to dig into any specific issue?"
-- **Re-run**: "Re-run a reviewer with different focus?"
-- **Memory**: "Update reviewer memory with your decisions?" (call `update-memory` tool)
-- **Save**: "Save this report to the vault?" (write the markdown to the reviews directory)
+Spawn Claude rebuttals via subagent. For Codex/Pi rebuttals, resume their sessions (use the `session_id` returned from step 3).
 
-## Important Notes
+### 5. Synthesize
 
-- Each MCP tool call returns JSON. Do NOT show raw JSON to the user — always summarize or render as readable text.
-- The synthesized markdown report is the final deliverable. Present it as-is.
-- If any tool call fails, report the error clearly and ask how to proceed.
-- You can run selective reviews — if the user asks for "just text-only reviewers", only call analytical and immersive.
+Spawn a `Task` subagent with:
+- System prompt: `get-prompt("agent-framing.md")` + `get-prompt("synthesis.md", vars: {ReviewNum: <padded>})` + `get-prompt("verdict.md")`
+- User prompt: all four reviews + the two cross-review rebuttals, labeled
+
+Get the review number from `next-review-number`.
+
+### 6. Save
+
+Stage parts (`stage-review-part`), then `assemble-review` with prefix `chapter-<name>-review`.
+
+### 7. Present
+
+Show the synthesis in conversation. Tell the user the saved file path.
+
+## Notes
+
+- Read the chapter from `<vault>/story/`, not from summaries or generated files.
+- Issue IDs follow the global counter (review number from `next-review-number`).
+- This is heavy — 4 reviews + 2 cross-reviews + synthesis = up to 7 agent calls. The manuscript skill is the same shape; the chapter version is for narrower focus.

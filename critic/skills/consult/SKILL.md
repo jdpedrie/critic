@@ -1,37 +1,44 @@
 ---
 name: consult
-description: Get a second opinion from Codex and Gemini on a writing question.
+description: Get a second opinion from Codex and Pi on a specific writing question. Useful when you (the parent Claude) want an outside view on a passage, decision, or comparison. Also invoke proactively when a second opinion would be valuable to the user.
 ---
 
 # Consult
 
-Get outside opinions from other AI models on a specific question.
+Get short, focused second opinions from Codex and Pi on a fiction-writing question.
 
-## When to use
+The vault path is the user's configured vault — call `read-settings` if you need it.
 
-- The user asks you to evaluate a passage, change, or decision and you think a second opinion adds value
-- The user explicitly asks for other perspectives
-- You're uncertain about a craft judgment and want to check your instinct
-- The user asks "what do you think about X" and the question is concrete enough to send to another model
+## Arguments
 
-## How to use
+$ARGUMENTS is the question. The user may also pass context inline (a passage, a change, a decision). If they don't, supply context yourself from your conversation so far.
 
-Call the `consult` MCP tool with:
-- `question`: The specific question to ask. Be precise — "Does Kael's motivation in paragraph 3 feel earned?" not "What do you think of this chapter?"
-- `context`: The relevant passage, diff, or background. Keep it focused — send the relevant paragraphs, not the whole chapter.
+## Workflow
 
-The tool sends the question to all enabled non-Claude models (Codex, Gemini) and returns their responses.
+### 1. Compose
 
-## After receiving responses
+```
+system = "You are a publishing consultant. Answer the question directly and concisely. Ground your answer in the provided context. Quote passages when relevant. Don't hedge. State your model identity at the start of your output."
 
-Present the outside opinions naturally in conversation. Don't dump them verbatim — synthesize:
-- Where the other models agree with your assessment, note the consensus briefly
-- Where they disagree, present the disagreement and the reasoning
-- Where they caught something you missed, acknowledge it
-- Give your own final take, informed by the outside opinions
+user = "Context:\n\n<the context>\n\n---\n\nQuestion: <the question>"
+```
 
-## Important
+If the question genuinely needs the full manuscript, include it via the `include_manuscript_from` parameter on the invoke calls instead of inlining.
 
-- This is for **specific questions**, not full reviews. For full reviews use `/critic:review` or `/critic:manuscript`.
-- Include everything relevant as context — excerpts, full chapters, world-building notes — whatever the other models need to give an informed answer. But don't overshare irrelevant material. Use judgment.
-- The user doesn't need to ask for this explicitly. If you judge that a second opinion would be valuable, use it proactively.
+### 2. Invoke in parallel
+
+```
+invoke-codex(system_prompt, user_prompt)
+invoke-pi(system_prompt, user_prompt)
+```
+
+If only one is enabled, run only that one. If both fail, report and stop.
+
+### 3. Present
+
+Show both responses to the user, labeled by source. Then add your own brief take if you have one — note where you agree, disagree, or where the outside opinions caught something you'd have missed.
+
+## Notes
+
+- Keep the context focused. Sending the whole manuscript through tool calls is expensive — use `include_manuscript_from: <vault>` if you actually need it (it's appended server-side, doesn't go through this session's token budget).
+- This is for narrow questions. For full critique use `/critic:manuscript` or `/critic:review`.

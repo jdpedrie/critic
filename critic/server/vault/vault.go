@@ -305,6 +305,49 @@ func (v *Vault) ReadReviewByNumber(num int) (string, string, error) {
 	return "", "", fmt.Errorf("review #%03d not found", num)
 }
 
+// WriteStagedPart writes a named part to a staging directory for later assembly.
+func (v *Vault) WriteStagedPart(name, content string) error {
+	dir := filepath.Join(v.Root, "review", ".staging")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
+}
+
+// AssembleReview reads all staged parts in the given order, assembles them
+// with the sentinel, writes the final review file, and cleans up staging.
+func (v *Vault) AssembleReview(prefix string, synthesisKey string, partKeys []string) (string, int, error) {
+	dir := filepath.Join(v.Root, "review", ".staging")
+
+	// Read synthesis
+	synthesis, err := os.ReadFile(filepath.Join(dir, synthesisKey))
+	if err != nil {
+		return "", 0, fmt.Errorf("read staged synthesis: %w", err)
+	}
+
+	// Build raw outputs section
+	var rawParts []string
+	for _, key := range partKeys {
+		data, err := os.ReadFile(filepath.Join(dir, key))
+		if err != nil {
+			continue // skip missing parts
+		}
+		rawParts = append(rawParts, string(data))
+	}
+
+	content := string(synthesis) + ReviewSentinel + strings.Join(rawParts, "\n\n---\n\n")
+
+	relPath, num, err := v.WriteReview(prefix, content)
+	if err != nil {
+		return "", 0, err
+	}
+
+	// Clean up staging
+	os.RemoveAll(dir)
+
+	return relPath, num, nil
+}
+
 // WriteReviewFile overwrites a review file by name.
 func (v *Vault) WriteReviewFile(filename string, content string) error {
 	path := filepath.Join(v.Root, "review", filename)

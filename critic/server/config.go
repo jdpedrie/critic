@@ -9,27 +9,15 @@ import (
 )
 
 type Config struct {
-	VaultPath    string            `yaml:"-"`
-	Models       ModelConfig       `yaml:"models"`
-	Claude       ClaudeConfig      `yaml:"claude"`
-	Codex        CodexConfig       `yaml:"codex"`
-	Gemini       GeminiConfig      `yaml:"gemini"`
-	Adversarial  AdversarialConfig `yaml:"adversarial"`
-	Review       ReviewConfig      `yaml:"review"`
-	Memory       MemoryConfig      `yaml:"memory"`
-}
+	VaultPath string      `yaml:"-"`
+	Codex     CodexConfig `yaml:"codex"`
+	Pi        PiConfig    `yaml:"pi"`
 
-type ModelConfig struct {
-	TextAnalytical  string `yaml:"text_analytical"`
-	TextImmersive   string `yaml:"text_immersive"`
-	FullStructural  string `yaml:"full_structural"`
-	FullAdversarial string `yaml:"full_adversarial"`
-	Synthesizer     string `yaml:"synthesizer"`
-}
-
-type ClaudeConfig struct {
-	Model   string `yaml:"model"`
-	Enabled bool
+	// Legacy fields kept for backward compatibility with older config.yaml
+	// files. They are not consulted by any agent or tool.
+	Claude      LegacyConfig `yaml:"claude,omitempty"`
+	Gemini      LegacyConfig `yaml:"gemini,omitempty"`
+	Adversarial LegacyConfig `yaml:"adversarial,omitempty"`
 }
 
 type CodexConfig struct {
@@ -37,52 +25,24 @@ type CodexConfig struct {
 	Enabled bool
 }
 
-type GeminiConfig struct {
-	Model   string `yaml:"model"`
-	Enabled bool
+type PiConfig struct {
+	Provider string `yaml:"provider"` // anthropic | openai | google
+	Model    string `yaml:"model"`
+	Enabled  bool
 }
 
-type AdversarialConfig struct {
-	BaseURL string `yaml:"base_url"`
-	Model   string `yaml:"model"`
-	APIKey  string `yaml:"api_key"`
-	Enabled bool
-}
-
-type ReviewConfig struct {
-	MaxIssues          int    `yaml:"max_issues"`
-	MaxNewIssuesRound2 int    `yaml:"max_new_issues_round2"`
-	PriorChapters      int    `yaml:"prior_chapters"`
-	CanonRetrieval     string `yaml:"canon_retrieval"`
-}
-
-type MemoryConfig struct {
-	CompressThreshold int `yaml:"compress_threshold"`
-	MaxOpenIssues     int `yaml:"max_open_issues"`
+// LegacyConfig is a permissive shape that swallows old config sections
+// (gemini, adversarial) without failing to parse.
+type LegacyConfig struct {
+	Model   string `yaml:"model,omitempty"`
+	BaseURL string `yaml:"base_url,omitempty"`
+	APIKey  string `yaml:"api_key,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
-		Claude: ClaudeConfig{Model: "claude-sonnet-4-6"},
-		Codex:  CodexConfig{Model: "gpt-5.3-codex"},
-		Gemini: GeminiConfig{Model: "gemini-2.5-flash"},
-		Models: ModelConfig{
-			TextAnalytical:  "claude",
-			TextImmersive:   "codex",
-			FullStructural:  "claude",
-			FullAdversarial: "codex",
-			Synthesizer:     "claude",
-		},
-		Review: ReviewConfig{
-			MaxIssues:          7,
-			MaxNewIssuesRound2: 3,
-			PriorChapters:      2,
-			CanonRetrieval:     "keyword",
-		},
-		Memory: MemoryConfig{
-			CompressThreshold: 2000,
-			MaxOpenIssues:     20,
-		},
+		Codex: CodexConfig{Model: ""}, // empty = let Codex CLI pick
+		Pi:    PiConfig{Provider: "google", Model: ""},
 	}
 
 	// Config file is optional — defaults above are sufficient.
@@ -98,20 +58,14 @@ func LoadConfig(path string) (*Config, error) {
 	ps, _ := readSettings()
 
 	// Model overrides: settings file > CLAUDE_PLUGIN_OPTION_ env > config.yaml
-	if v := settingOrEnv(ps, "claude_model"); v != "" {
-		cfg.Claude.Model = v
-	}
 	if v := settingOrEnv(ps, "codex_model"); v != "" {
 		cfg.Codex.Model = v
 	}
-	if v := settingOrEnv(ps, "gemini_model"); v != "" {
-		cfg.Gemini.Model = v
+	if v := settingOrEnv(ps, "pi_provider"); v != "" {
+		cfg.Pi.Provider = v
 	}
-	if v := settingOrEnv(ps, "adversarial_base_url"); v != "" {
-		cfg.Adversarial.BaseURL = v
-	}
-	if v := settingOrEnv(ps, "adversarial_model"); v != "" {
-		cfg.Adversarial.Model = v
+	if v := settingOrEnv(ps, "pi_model"); v != "" {
+		cfg.Pi.Model = v
 	}
 
 	// Vault path
@@ -120,10 +74,8 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Enable/disable — default to true unless explicitly "false".
-	cfg.Claude.Enabled = settingOrEnvBool(ps, "claude_enabled", true)
 	cfg.Codex.Enabled = settingOrEnvBool(ps, "codex_enabled", true)
-	cfg.Gemini.Enabled = settingOrEnvBool(ps, "gemini_enabled", true)
-	cfg.Adversarial.Enabled = settingOrEnvBool(ps, "adversarial_enabled", true)
+	cfg.Pi.Enabled = settingOrEnvBool(ps, "pi_enabled", true)
 
 	return cfg, nil
 }
@@ -144,9 +96,4 @@ func settingOrEnvBool(ps map[string]string, key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return strings.EqualFold(v, "true") || v == "1"
-}
-
-// pluginOpt reads a CLAUDE_PLUGIN_OPTION_<key> env var.
-func pluginOpt(key string) string {
-	return os.Getenv("CLAUDE_PLUGIN_OPTION_" + key)
 }
