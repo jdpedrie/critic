@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -273,6 +274,72 @@ func main() {
 			v := vaultFromReq(req)
 			num := v.NextReviewNumber()
 			return mcp.NewToolResultText(fmt.Sprintf("%d", num)), nil
+		},
+	)
+
+	// snapshot-and-diff
+	s.AddTool(
+		mcp.NewTool("snapshot-and-diff",
+			mcp.WithDescription("Atomic: writes a new snapshot of story/ to review/.snapshots/<prefix>-<timestamp>.md, locates the prior snapshot for the same prefix, computes a unified diff against it, and saves the diff as a paired <prefix>-<timestamp>.diff file alongside the snapshot. Returns JSON {snapshot_path, prior_path, diff_path, diff_text}. If there's no prior snapshot (first run) or the manuscript is unchanged, diff_path and diff_text are empty."),
+			vaultParam,
+			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			prefix, _ := req.RequireString("prefix")
+			snapshotPath, priorPath, diffPath, diffText, err := v.SnapshotAndDiff(prefix)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("snapshot-and-diff: %v", err)), nil
+			}
+			data, _ := json.Marshal(map[string]string{
+				"snapshot_path": snapshotPath,
+				"prior_path":    priorPath,
+				"diff_path":     diffPath,
+				"diff_text":     diffText,
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// write-snapshot
+	s.AddTool(
+		mcp.NewTool("write-snapshot",
+			mcp.WithDescription("Concatenate every chapter file in story/ into a single timestamped snapshot under review/.snapshots/<prefix>-<timestamp>.md. Returns JSON {path, prior_path}. prior_path is the vault-relative path of the most recent prior snapshot with the same prefix (empty if none)."),
+			vaultParam,
+			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			prefix, _ := req.RequireString("prefix")
+			path, priorPath, err := v.WriteSnapshot(prefix)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("write snapshot: %v", err)), nil
+			}
+			data, _ := json.Marshal(map[string]string{
+				"path":       path,
+				"prior_path": priorPath,
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// diff-snapshots
+	s.AddTool(
+		mcp.NewTool("diff-snapshots",
+			mcp.WithDescription("Run `diff -u prior current` and return the unified diff text. Paths can be vault-relative or absolute. Returns the diff body verbatim (use it to feed a Claude subagent that writes a human-readable summary)."),
+			vaultParam,
+			mcp.WithString("prior", mcp.Required(), mcp.Description("Path to the older snapshot (vault-relative or absolute).")),
+			mcp.WithString("current", mcp.Required(), mcp.Description("Path to the newer snapshot.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v := vaultFromReq(req)
+			prior, _ := req.RequireString("prior")
+			current, _ := req.RequireString("current")
+			out, err := v.DiffSnapshots(prior, current)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("diff: %v", err)), nil
+			}
+			return mcp.NewToolResultText(out), nil
 		},
 	)
 

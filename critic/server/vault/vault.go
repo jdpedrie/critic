@@ -3,6 +3,7 @@ package vault
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -158,7 +159,7 @@ func (v *Vault) ReadAllChapters() ([]NamedChapter, error) {
 			names = append(names, e.Name())
 		}
 	}
-	sort.Strings(names)
+	sortChapterNames(names)
 
 	var chapters []NamedChapter
 	for _, name := range names {
@@ -447,8 +448,23 @@ func (v *Vault) ListChapterNames() ([]string, error) {
 			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
 		}
 	}
-	sort.Strings(names)
+	sortChapterNames(names)
 	return names, nil
+}
+
+// sortChapterNames sorts chapter filenames in place, honoring the Obsidian
+// convention that a leading underscore means "sort first" (used for
+// epigraphs, prologues, and other prefatory matter). Within each group
+// (underscore-prefixed vs. not), names sort lexicographically.
+func sortChapterNames(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		iUnder := strings.HasPrefix(names[i], "_")
+		jUnder := strings.HasPrefix(names[j], "_")
+		if iUnder != jUnder {
+			return iUnder
+		}
+		return names[i] < names[j]
+	})
 }
 
 // ReadIssues reads the issues.md file from the vault root, if it exists.
@@ -502,6 +518,19 @@ func (v *Vault) ReadStyleGuide() string {
 	return string(data)
 }
 
+// ReadStage reads the stage.md file from the vault root, if it exists.
+// stage.md describes where the manuscript is in the drafting process
+// (e.g., "3/4 of first act, 30,000 / 120,000 words") so reviewers can
+// calibrate against the actual scope of the work rather than treating
+// it as a finished product.
+func (v *Vault) ReadStage() string {
+	data, err := os.ReadFile(filepath.Join(v.Root, "stage.md"))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 // ReadReviewerMemory reads a reviewer's memory file.
 func (v *Vault) ReadReviewerMemory(role string) (string, error) {
 	path := filepath.Join(v.Root, "system", "reviewer-memory", role+".md")
@@ -522,4 +551,231 @@ func (v *Vault) WriteReviewerMemory(role string, content string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, role+".md"), []byte(content), 0o644)
+}
+
+// WriteSnapshot concatenates all chapters in story/ in filename order and
+// writes the result to review/.snapshots/<prefix>-<timestamp>.md. Returns
+// the vault-relative path of the new snapshot and the vault-relative path
+// of the previous snapshot with the same prefix (or "" if none exists).
+func (v *Vault) WriteSnapshot(prefix string) (currentRel, priorRel string, err error) {
+	dir := filepath.Join(v.Root, "review", ".snapshots")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+
+	chapters, err := v.ReadAllChapters()
+	if err != nil {
+		return "", "", err
+	}
+	if len(chapters) == 0 {
+		return "", "", fmt.Errorf("no chapters found in story/")
+	}
+
+	var b strings.Builder
+	for _, ch := range chapters {
+		fmt.Fprintf(&b, "--- %s ---\n%s\n\n", ch.Name, ch.Content)
+	}
+
+	// Locate the most recent prior snapshot for this prefix
+	priorRel = v.latestSnapshotRel(prefix)
+
+	timestamp := time.Now().Format("2006-01-02-150405")
+	filename := fmt.Sprintf("%s-%s.md", prefix, timestamp)
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return "", "", err
+	}
+
+	rel, _ := filepath.Rel(v.Root, path)
+	return rel, priorRel, nil
+}
+
+// latestSnapshotRel returns the vault-relative path of the most recent
+// snapshot for the given prefix. Returns "" if none exists.
+func (v *Vault) latestSnapshotRel(prefix string) string {
+	dir := filepath.Join(v.Root, "review", ".snapshots")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var latest string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix+"-") {
+			continue
+		}
+		if name > latest {
+			latest = name
+		}
+	}
+	if latest == "" {
+		return ""
+	}
+	rel, _ := filepath.Rel(v.Root, filepath.Join(dir, latest))
+	return rel
+}
+
+// SnapshotAndDiff writes a new snapshot, computes the diff against the prior
+// snapshot for the same prefix (if any), and writes the diff to a paired
+// `.diff` file alongside the new snapshot. Returns vault-relative paths and
+// the diff text. If there's no prior snapshot, diffPath and diffText are "".
+func (v *Vault) SnapshotAndDiff(prefix string) (snapshotPath, priorPath, diffPath, diffText string, err error) {
+	snapshotPath, priorPath, err = v.WriteSnapshot(prefix)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if priorPath == "" {
+		return snapshotPath, "", "", "", nil
+	}
+
+	diffText, err = v.DiffSnapshots(priorPath, snapshotPath)
+	if err != nil {
+		return snapshotPath, priorPath, "", "", err
+	}
+	if diffText == "" {
+		// Files identical — no diff file written.
+		return snapshotPath, priorPath, "", "", nil
+	}
+
+	// Pair the diff file with the snapshot: same basename, .diff extension.
+	diffAbs := filepath.Join(v.Root, snapshotPath)
+	diffAbs = strings.TrimSuffix(diffAbs, ".md") + ".diff"
+	if err := os.WriteFile(diffAbs, []byte(diffText), 0o644); err != nil {
+		return snapshotPath, priorPath, "", diffText, err
+	}
+	diffPath, _ = filepath.Rel(v.Root, diffAbs)
+	return snapshotPath, priorPath, diffPath, diffText, nil
+}
+
+// DiffSnapshots runs `diff -u prior current` and returns the unified diff
+// text. Paths may be vault-relative or absolute. Exit code 1 from diff
+// (files differ) is treated as success.
+func (v *Vault) DiffSnapshots(prior, current string) (string, error) {
+	priorAbs := prior
+	if !filepath.IsAbs(prior) {
+		priorAbs = filepath.Join(v.Root, prior)
+	}
+	currentAbs := current
+	if !filepath.IsAbs(current) {
+		currentAbs = filepath.Join(v.Root, current)
+	}
+	return runDiff(priorAbs, currentAbs)
+}
+
+func runDiff(prior, current string) (string, error) {
+	cmd := exec.Command("diff", "-u", prior, current)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return string(out), nil
+			}
+			return "", fmt.Errorf("diff: %w (stderr: %s)", err, string(exitErr.Stderr))
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
+// FetchDiff returns the unified diff between the most recent snapshot for
+// the given prefix and the one before it. If chapter is non-empty, only
+// the section of the diff that pertains to that chapter is returned.
+// Returns "" if there's only one snapshot (no prior to diff against), or
+// if the requested chapter exists in neither snapshot.
+//
+// Chapter sections are delimited by "--- <name> ---" headers written by
+// WriteSnapshot. The chapter argument may include or omit the ".md" suffix.
+func (v *Vault) FetchDiff(prefix, chapter string) (string, error) {
+	if prefix == "" {
+		prefix = "manuscript"
+	}
+
+	dir := filepath.Join(v.Root, "review", ".snapshots")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		if !strings.HasPrefix(name, prefix+"-") {
+			continue
+		}
+		matches = append(matches, name)
+	}
+	if len(matches) < 2 {
+		return "", nil
+	}
+	sort.Strings(matches)
+	current := filepath.Join(dir, matches[len(matches)-1])
+	prior := filepath.Join(dir, matches[len(matches)-2])
+
+	if chapter == "" {
+		return runDiff(prior, current)
+	}
+
+	priorSection, err := extractChapterSection(prior, chapter)
+	if err != nil {
+		return "", fmt.Errorf("read prior snapshot: %w", err)
+	}
+	currentSection, err := extractChapterSection(current, chapter)
+	if err != nil {
+		return "", fmt.Errorf("read current snapshot: %w", err)
+	}
+	if priorSection == "" && currentSection == "" {
+		return "", nil
+	}
+	if priorSection == currentSection {
+		return "", nil
+	}
+
+	tmp, err := os.MkdirTemp("", "critic-diff-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+
+	priorTmp := filepath.Join(tmp, "prior.md")
+	currentTmp := filepath.Join(tmp, "current.md")
+	if err := os.WriteFile(priorTmp, []byte(priorSection), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(currentTmp, []byte(currentSection), 0o644); err != nil {
+		return "", err
+	}
+	return runDiff(priorTmp, currentTmp)
+}
+
+// extractChapterSection returns the text between "--- <chapter> ---" and
+// the next "--- " marker (or EOF). Returns "" if the chapter isn't in the
+// file.
+func extractChapterSection(path, chapter string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	name := strings.TrimSuffix(chapter, ".md")
+	marker := "--- " + name + " ---"
+
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return "", nil
+	}
+	rest := text[idx:]
+	after := rest[len(marker):]
+	next := strings.Index(after, "\n--- ")
+	if next < 0 {
+		return rest, nil
+	}
+	return rest[:len(marker)+next+1], nil
 }

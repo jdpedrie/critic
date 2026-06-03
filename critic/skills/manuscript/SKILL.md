@@ -9,6 +9,22 @@ The vault path is the user's configured vault. Call `read-settings` first to get
 
 This skill orchestrates the workflow. All Claude work is done by `Task` subagents (you spawn them). External models (Codex, Pi) are reached via `invoke-codex` / `invoke-pi`. Prompts are loaded via `get-prompt`.
 
+## $ARGUMENTS — Author's note
+
+If $ARGUMENTS is non-empty, treat it as an **author's note** for this review: a short statement of what the author was trying to accomplish with the changes since the last review. Hold it as `author_note` and inject it into the user prompt in B5 under `=== AUTHOR'S NOTE FOR THIS REVIEW ===`. It also gets staged as part of the saved review file (B9).
+
+If $ARGUMENTS is empty, no note is included — proceed normally.
+
+Examples:
+- `/critic:manuscript tightened the chapter 4 cafe scene and added the chapel scene to give Byrne some interiority`
+- `/critic:manuscript trying to fix the agency problem from the last review — added a moment where Henry actually chooses`
+
+The note is distinct from `stage.md`:
+- `stage.md` describes the long-running project state (act 1, target length, what hasn't been attempted).
+- The author's note describes the intent of *this specific revision*.
+
+Reviewers are told to assess whether the changes achieved the stated intent. They are NOT required to agree — they can say "the chapter 4 scene is tighter but introduces a new pacing issue at the chapel."
+
 ## Phase A — Interactive Setup
 
 You (the parent Claude) act as supervisor. Ask the user four things, in order. Keep it tight — one question at a time.
@@ -64,7 +80,23 @@ Also: read `issues.md` from the vault root (if present) for known/deferred issue
 
 Call `next-review-number` (no args except vault).
 
-### B3. Compose the manuscript-review system prompt
+### B3. Snapshot the manuscript and diff against the prior snapshot
+
+Call `snapshot-and-diff(vault: <vault>, prefix: "manuscript")`. The tool atomically:
+- Writes a new snapshot of every chapter in `story/` to `review/.snapshots/manuscript-<timestamp>.md`
+- Finds the prior `manuscript-*.md` snapshot
+- If a prior exists and the content differs, computes a unified diff and saves it as a paired `manuscript-<timestamp>.diff` file alongside the snapshot
+- Returns JSON `{snapshot_path, prior_path, diff_path, diff_text}` (all vault-relative; empty strings where not applicable).
+
+If `diff_text` is empty (first manuscript run ever, or no substantive changes): skip to B4. Hold `diff_summary` as `""` and `diff_full_path` as `""`.
+
+If `diff_text` is non-empty:
+1. Read `diff_text` yourself. Write a concise summary — a couple sentences per chapter that actually changed, plus a one-line note on structural shifts (new chapters, reorders, large rewrites). The summary is what reviewers see; the full diff file is already on disk at `diff_path` for the user to inspect.
+2. Hold the summary as `diff_summary`. Hold `diff_path` as `diff_full_path`.
+
+If the diff is whitespace-only or trivially small, the summary can be a single line: "No substantive changes since the last review."
+
+### B4. Compose the manuscript-review system prompt
 
 Call `get-prompt` three times and concatenate:
 - `get-prompt(name: "agent-framing.md", vault: <vault>)`
@@ -73,18 +105,26 @@ Call `get-prompt` three times and concatenate:
 
 Hold this as `manuscript_system_prompt`.
 
-### B4. Build user prompt prefix
+### B5. Build user prompt prefix
 
-Construct (in this order, only if present):
-- Style guide: read `<vault>/style.md` if it exists, prefix with `=== STYLE GUIDE ===`
-- Known issues: prefix with `=== KNOWN ISSUES ===`
-- Prior review summary: prefix with `=== PRIOR REVIEW SUMMARY ===`
+Construct (in this order, only the sections that apply). The stage block goes
+first because it calibrates everything else; the author's note (if present)
+goes near the changes-since-last-review block since the two are paired.
+
+- **Current draft stage**: read `<vault>/stage.md` if it exists, prefix with `=== CURRENT DRAFT STAGE ===`. This tells reviewers what fraction of the book they're seeing, what the author is currently trying to do, and what they haven't yet attempted. CRITICAL: include this block first if present — reviewers must calibrate their entire assessment against it.
+- **Style guide**: read `<vault>/style.md` if it exists, prefix with `=== STYLE GUIDE ===`
+- **Known issues**: read `<vault>/issues.md` if it exists, prefix with `=== KNOWN ISSUES ===`
+- **Prior review summary** (if loaded in B1): prefix with `=== PRIOR REVIEW SUMMARY ===`
+- **Diff summary** (if generated in B3): prefix with `=== CHANGES SINCE LAST REVIEW ===` and tell the reader: "This summarizes what the author actually changed since the previous review. Use it to assess whether prior issues were addressed and what the changes introduced. The full diff is on disk at `<diff_full_path>` if you need it (but reviewers don't have a way to fetch it; only the orchestrator and the user can read it)."
+- **Author's note** (if $ARGUMENTS was non-empty): prefix with `=== AUTHOR'S NOTE FOR THIS REVIEW ===` followed by the verbatim note, then tell the reader: "This is what the author says they were trying to accomplish with this revision. Assess whether the changes achieved that intent. You are not required to agree — if the intent was achieved but introduced new problems, say so."
+
+If `stage.md` does not exist, mention to the user once at the end of Phase A that maintaining a `stage.md` file (describing where the project is and what the current draft is trying to do) significantly improves review quality. Do not block — just continue.
 
 Do NOT include the manuscript in this string. The `invoke-*` tools take `include_manuscript_from: <vault>` to append it server-side.
 
 For Claude subagents, you'll need to read the manuscript yourself and inline it (no `include_manuscript_from` available there).
 
-### B5. Independent reviews (parallel)
+### B6. Independent reviews (parallel)
 
 Spawn all enabled reviewers in a single turn (parallel tool calls).
 
@@ -149,7 +189,7 @@ This is a fresh Pi session (different system prompt) with its own session_id. St
 
 If a reviewer errors, note it and continue. Require at least one reviewer to succeed.
 
-### B6. Cross-review (if step enabled)
+### B7. Cross-review (if step enabled)
 
 Full matrix — each participating reviewer rebuts the others. Spawn in parallel.
 
@@ -198,7 +238,7 @@ Note: the cross-review system prompt is the standard constructive-leaning one fo
 
 If a reviewer was skipped in B5, skip its rebuttal here too.
 
-### B7. Synthesis (if step enabled, subagent)
+### B8. Synthesis (if step enabled, subagent)
 
 Spawn a `Task` subagent. Give it:
 - All primary reviews (Claude / Codex / Pi)
@@ -213,10 +253,12 @@ The subagent returns the synthesis as markdown with `ISSUE-NNN-NN` IDs.
 
 Capture as `synthesis`.
 
-### B8. Stage parts (as you go)
+### B9. Stage parts (as you go)
 
 Stage every artifact via `stage-review-part(vault, name, content)`:
 
+- `author-note` → `# Author's Note\n\n<author_note>` (only if $ARGUMENTS was non-empty)
+- `diff-summary` → `# Changes Since Last Review\n\n<diff_summary>\n\nFull diff: \`<diff_full_path>\`` (only if a diff was produced in B3)
 - `claude-review` → `# Claude Review\n\n<claude_review>`
 - `claude-rejection` → `# Claude Rejection Pass\n\n<claude_rejection>` (if any)
 - `codex-review` → `# Codex Review\n\n<codex_review>` (if any)
@@ -230,20 +272,20 @@ Stage every artifact via `stage-review-part(vault, name, content)`:
 
 Stage parts as each step completes — don't batch at the end.
 
-### B9. Assemble (if save enabled)
+### B10. Assemble (if save enabled)
 
 ```
 assemble-review(
   vault: <vault>,
   prefix: "manuscript-critic",
   synthesis_part: "synthesis",
-  raw_parts: "claude-review,claude-rejection,codex-review,pi-review,adversary-review,claude-rebuttal,codex-rebuttal,pi-rebuttal,adversary-rebuttal",
+  raw_parts: "author-note,diff-summary,claude-review,claude-rejection,codex-review,pi-review,adversary-review,claude-rebuttal,codex-rebuttal,pi-rebuttal,adversary-rebuttal",
 )
 ```
 
 Missing staged parts are skipped automatically.
 
-### B10. Present
+### B11. Present
 
 Tell the user the saved file path and review number. Then present the synthesis in conversation. After the synthesis, briefly call out:
 - The rejection pass findings (if any) — most important corrective
