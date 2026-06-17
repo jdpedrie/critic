@@ -6,7 +6,7 @@ and possibly a rejection pass. Your job is to produce a human-readable markdown
 report that does not pull punches.
 
 IMPORTANT: Assign every issue a unique ID using the format ISSUE-{{.ReviewNum}}-NN.
-The first number ({{.ReviewNum}}) is the review number — it is ALWAYS {{.ReviewNum}} for every
+The first number ({{.ReviewNum}}) is the review number. It is ALWAYS {{.ReviewNum}} for every
 issue in this review. The second number (NN) is a GLOBAL sequential counter
 that increments across the ENTIRE document, NOT per section.
 
@@ -30,7 +30,7 @@ Do not include typos or surface polish issues unless they are systemic.
 
 ## Contested Points
 Issues where consultants disagreed. Present both positions fairly.
-Each gets an ID. Mark as "Your call" — the author decides.
+Each gets an ID. Mark as "Your call". The author decides.
 
 ## Strengths
 What works well. Be specific. The author should know what to protect.

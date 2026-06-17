@@ -3,132 +3,409 @@ package vault
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
-	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-// Vault provides access to the Obsidian vault structure.
+// Vault represents a StoryLine project. Root is the project base folder —
+// the directory that contains Scenes/, Codex/, Research/, and where we
+// keep review/, summary/, snapshots/, stage.md, style.md.
 type Vault struct {
-	Root string
+	Root         string // project base folder
+	ProjectFile  string // absolute path to <Title>.md
+	ProjectTitle string // basename without .md
 }
 
-func New(root string) *Vault {
-	return &Vault{Root: root}
+// Project mirrors the storyline plugin's project frontmatter — the parts the
+// critic system cares about (acts, chapters, labels, descriptions).
+type Project struct {
+	Title               string
+	Description         string
+	Language            string
+	DefinedActs         []int
+	DefinedChapters     []int
+	ActLabels           map[int]string
+	ChapterLabels       map[int]string
+	ActDescriptions     map[int]string
+	ChapterDescriptions map[int]string
 }
 
-// ReadChapter reads a chapter file by name (e.g., "chapter-01" or "chapter-01.md").
-func (v *Vault) ReadChapter(name string) (string, error) {
-	if !strings.HasSuffix(name, ".md") {
-		name = name + ".md"
+// Scene is a parsed scene file from Scenes/.
+type Scene struct {
+	Path       string // absolute path
+	Filename   string // basename without .md
+	Title      string
+	Act        int      // 0 if unset
+	Chapter    int      // 0 if unset
+	Sequence   int      // 9999 if unset
+	POV        string   // cleaned wikilink
+	Characters []string // cleaned wikilinks
+	Location   string   // cleaned wikilink
+	Body       string   // post-frontmatter, trimmed, wikilinks stripped to display name
+	Wordcount  int      // from frontmatter, 0 if absent
+}
+
+// New opens a storyline vault rooted at `root`. The root must be a directory
+// containing exactly one `<Title>.md` file with `type: storyline` frontmatter
+// whose derived base folder equals `root`. Returns an error if zero or
+// multiple matching projects are found.
+func New(root string) (*Vault, error) {
+	if root == "" {
+		return nil, fmt.Errorf("vault root is empty")
 	}
-	path := filepath.Join(v.Root, "story", name)
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("stat vault root: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("vault root %q is not a directory", root)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("read vault root: %w", err)
+	}
+
+	var matches []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(root, e.Name())
+		if isStorylineProjectFile(path) {
+			matches = append(matches, path)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no storyline project (.md with `type: storyline`) found in %s", root)
+	case 1:
+		return &Vault{
+			Root:         root,
+			ProjectFile:  matches[0],
+			ProjectTitle: strings.TrimSuffix(filepath.Base(matches[0]), ".md"),
+		}, nil
+	default:
+		return nil, fmt.Errorf("multiple storyline projects found in %s; expected exactly one", root)
+	}
+}
+
+func isStorylineProjectFile(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read chapter %s: %w", name, err)
+		return false
 	}
-	return string(data), nil
+	fm, _ := extractFrontmatter(string(data))
+	if fm == nil {
+		return false
+	}
+	t, _ := fm["type"].(string)
+	return t == "storyline"
 }
 
-// ReadPriorChapters reads up to n chapters before the given chapter.
-func (v *Vault) ReadPriorChapters(name string, n int) ([]string, error) {
-	storyDir := filepath.Join(v.Root, "story")
-	entries, err := os.ReadDir(storyDir)
+// ReadProject loads the project frontmatter and description body.
+func (v *Vault) ReadProject() (*Project, error) {
+	data, err := os.ReadFile(v.ProjectFile)
 	if err != nil {
-		return nil, fmt.Errorf("read story directory: %w", err)
+		return nil, fmt.Errorf("read project file: %w", err)
+	}
+	fm, body := extractFrontmatter(string(data))
+	if fm == nil {
+		return nil, fmt.Errorf("project file %s has no frontmatter", v.ProjectFile)
 	}
 
-	if !strings.HasSuffix(name, ".md") {
-		name = name + ".md"
+	p := &Project{
+		Title:               coerceString(fm["title"]),
+		Description:         strings.TrimSpace(body),
+		Language:            coerceString(fm["language"]),
+		DefinedActs:         coerceIntSlice(fm["definedActs"]),
+		DefinedChapters:     coerceIntSlice(fm["definedChapters"]),
+		ActLabels:           coerceIntKeyedStringMap(fm["actLabels"]),
+		ChapterLabels:       coerceIntKeyedStringMap(fm["chapterLabels"]),
+		ActDescriptions:     coerceIntKeyedStringMap(fm["actDescriptions"]),
+		ChapterDescriptions: coerceIntKeyedStringMap(fm["chapterDescriptions"]),
+	}
+	if p.Title == "" {
+		p.Title = v.ProjectTitle
+	}
+	return p, nil
+}
+
+// ReadScenes loads every scene under Scenes/ and returns them sorted
+// act → chapter → sequence (mirroring the plugin's export order).
+// Files without `type: scene` frontmatter are silently skipped.
+func (v *Vault) ReadScenes() ([]Scene, error) {
+	dir := filepath.Join(v.Root, "Scenes")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read Scenes/: %w", err)
 	}
 
-	var chapters []string
+	var scenes []Scene
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			chapters = append(chapters, e.Name())
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
 		}
-	}
-	sort.Strings(chapters)
-
-	idx := -1
-	for i, ch := range chapters {
-		if ch == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return nil, nil
-	}
-
-	start := idx - n
-	if start < 0 {
-		start = 0
-	}
-
-	var result []string
-	for i := start; i < idx; i++ {
-		data, err := os.ReadFile(filepath.Join(storyDir, chapters[i]))
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read prior chapter %s: %w", chapters[i], err)
+			continue
 		}
-		result = append(result, string(data))
+		fm, body := extractFrontmatter(string(data))
+		if fm == nil {
+			continue
+		}
+		if t, _ := fm["type"].(string); t != "scene" {
+			continue
+		}
+
+		filename := strings.TrimSuffix(e.Name(), ".md")
+		title := coerceString(fm["title"])
+		if title == "" {
+			title = filename
+		}
+
+		scenes = append(scenes, Scene{
+			Path:       path,
+			Filename:   filename,
+			Title:      title,
+			Act:        coerceInt(fm["act"]),
+			Chapter:    coerceInt(fm["chapter"]),
+			Sequence:   coerceIntDefault(fm["sequence"], 9999),
+			POV:        cleanWikilink(coerceString(fm["pov"])),
+			Characters: cleanWikilinks(fm["characters"]),
+			Location:   cleanWikilink(coerceString(fm["location"])),
+			Body:       strings.TrimSpace(body),
+			Wordcount:  coerceInt(fm["wordcount"]),
+		})
+	}
+
+	sort.SliceStable(scenes, func(i, j int) bool {
+		if scenes[i].Act != scenes[j].Act {
+			return scenes[i].Act < scenes[j].Act
+		}
+		if scenes[i].Chapter != scenes[j].Chapter {
+			return scenes[i].Chapter < scenes[j].Chapter
+		}
+		return scenes[i].Sequence < scenes[j].Sequence
+	})
+
+	return scenes, nil
+}
+
+// AssembleManuscript emits scenes in the storyline plugin's Markdown export
+// format: `# Title`, then `## Act N: <label>`, `### Chapter N: <label>`,
+// `#### <scene title>`, body. Bodies have wikilinks stripped to display
+// names. Matches ExportService.buildManuscriptMd byte-for-byte for the
+// default option set (includeSceneTitles=true, numberScenes=false).
+func (v *Vault) AssembleManuscript(p *Project, scenes []Scene) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", p.Title)
+
+	var currentAct, currentChapter int = -1, -1
+	for _, s := range scenes {
+		if s.Act != currentAct {
+			currentAct = s.Act
+			currentChapter = -1
+			if label := p.ActLabels[s.Act]; label != "" {
+				fmt.Fprintf(&b, "## Act %d: %s\n\n", s.Act, label)
+			} else {
+				fmt.Fprintf(&b, "## Act %d\n\n", s.Act)
+			}
+		}
+		if s.Chapter != currentChapter {
+			currentChapter = s.Chapter
+			if label := p.ChapterLabels[s.Chapter]; label != "" {
+				fmt.Fprintf(&b, "### Chapter %d: %s\n\n", s.Chapter, label)
+			} else {
+				fmt.Fprintf(&b, "### Chapter %d\n\n", s.Chapter)
+			}
+		}
+		fmt.Fprintf(&b, "#### %s\n\n", s.Title)
+		if body := stripWikilinks(s.Body); body != "" {
+			b.WriteString(body)
+			b.WriteString("\n\n")
+		} else {
+			b.WriteString("*No content yet.*\n\n")
+		}
+	}
+	return b.String()
+}
+
+// RenderChapter assembles one chapter as `### Chapter N: <label>\n\n` followed
+// by `#### <scene title>\n\n<body>` for each scene in sequence order. Bodies
+// have wikilinks stripped, matching AssembleManuscript's per-scene shape.
+func RenderChapter(p *Project, chapter int, scenes []Scene) string {
+	var b strings.Builder
+	if label := p.ChapterLabels[chapter]; label != "" {
+		fmt.Fprintf(&b, "### Chapter %d: %s\n\n", chapter, label)
+	} else {
+		fmt.Fprintf(&b, "### Chapter %d\n\n", chapter)
+	}
+	sorted := append([]Scene(nil), scenes...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Sequence < sorted[j].Sequence })
+	for _, s := range sorted {
+		fmt.Fprintf(&b, "#### %s\n\n", s.Title)
+		if body := stripWikilinks(s.Body); body != "" {
+			b.WriteString(body)
+			b.WriteString("\n\n")
+		} else {
+			b.WriteString("*No content yet.*\n\n")
+		}
+	}
+	return b.String()
+}
+
+// RenderScene returns `#### <title>\n\n<body>` for one scene, with wikilinks
+// stripped.
+func RenderScene(s Scene) string {
+	body := stripWikilinks(s.Body)
+	if body == "" {
+		body = "*No content yet.*"
+	}
+	return fmt.Sprintf("#### %s\n\n%s\n", s.Title, body)
+}
+
+// ReadManuscript is a convenience: load project + scenes + assemble.
+func (v *Vault) ReadManuscript() (string, error) {
+	p, err := v.ReadProject()
+	if err != nil {
+		return "", err
+	}
+	scenes, err := v.ReadScenes()
+	if err != nil {
+		return "", err
+	}
+	return v.AssembleManuscript(p, scenes), nil
+}
+
+// ReadResearchFiles reads every .md file under Research/ keyed by vault-
+// relative path. Returns an empty map if the directory doesn't exist.
+func (v *Vault) ReadResearchFiles() (map[string]string, error) {
+	return v.readMarkdownTree("Research")
+}
+
+// ListCodexEntries returns the names (filename without .md) of every entry
+// in Codex/Characters/ and Codex/Locations/.
+func (v *Vault) ListCodexEntries() ([]string, error) {
+	var names []string
+	for _, sub := range []string{"Codex/Characters", "Codex/Locations"} {
+		dir := filepath.Join(v.Root, sub)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// ReadCodexEntry reads a single Codex entry by name (filename without .md).
+// Searches Characters/ then Locations/. Returns os.ErrNotExist if absent.
+func (v *Vault) ReadCodexEntry(name string) (string, error) {
+	name = strings.TrimSuffix(name, ".md")
+	for _, sub := range []string{"Codex/Characters", "Codex/Locations"} {
+		path := filepath.Join(v.Root, sub, name+".md")
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return string(data), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+// ReadCodexEntries reads Codex entries for the named entities. Names are
+// matched case-insensitively against filenames. If `names` is empty, all
+// entries are returned. Returns a map keyed by vault-relative path.
+func (v *Vault) ReadCodexEntries(names []string) (map[string]string, error) {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		n = strings.TrimSuffix(strings.TrimSpace(n), ".md")
+		if n != "" {
+			want[strings.ToLower(n)] = true
+		}
+	}
+	includeAll := len(want) == 0
+
+	result := make(map[string]string)
+	for _, sub := range []string{"Codex/Characters", "Codex/Locations"} {
+		dir := filepath.Join(v.Root, sub)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".md")
+			if !includeAll && !want[strings.ToLower(name)] {
+				continue
+			}
+			path := filepath.Join(dir, e.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			rel := filepath.Join(sub, e.Name())
+			result[rel] = string(data)
+		}
 	}
 	return result, nil
 }
 
-// ReadCanonFiles reads all files in the world/ directory tree.
-func (v *Vault) ReadCanonFiles() (map[string]string, error) {
-	worldDir := filepath.Join(v.Root, "world")
-	files := make(map[string]string)
-
-	err := filepath.Walk(worldDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip unreadable
+// SceneEntityNames returns the union of all character/POV/location names
+// referenced in the given scenes' frontmatter. Useful for prefiltering
+// Codex entries before sending to reviewers.
+func SceneEntityNames(scenes []Scene) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(n string) {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			return
 		}
-		if info.IsDir() || !strings.HasSuffix(path, ".md") {
-			return nil
+		seen[n] = true
+		out = append(out, n)
+	}
+	for _, s := range scenes {
+		add(s.POV)
+		add(s.Location)
+		for _, c := range s.Characters {
+			add(c)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(v.Root, path)
-		files[rel] = string(data)
-		return nil
-	})
-	return files, err
+	}
+	sort.Strings(out)
+	return out
 }
 
-// ReadCanonForEntities reads canon files whose content mentions any of the given entity names.
-func (v *Vault) ReadCanonForEntities(entities []string) (map[string]string, error) {
-	allFiles, err := v.ReadCanonFiles()
-	if err != nil {
-		return nil, err
-	}
-
-	matched := make(map[string]string)
-	for path, content := range allFiles {
-		lower := strings.ToLower(content)
-		for _, entity := range entities {
-			if strings.Contains(lower, strings.ToLower(entity)) {
-				matched[path] = content
-				break
+func (v *Vault) readMarkdownTree(sub string) (map[string]string, error) {
+	dir := filepath.Join(v.Root, sub)
+	result := make(map[string]string)
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
 			}
-		}
-	}
-	return matched, nil
-}
-
-// ReadPlotFiles reads all files in the plot/ directory tree.
-func (v *Vault) ReadPlotFiles() (map[string]string, error) {
-	plotDir := filepath.Join(v.Root, "plot")
-	files := make(map[string]string)
-
-	err := filepath.Walk(plotDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
 			return nil
 		}
 		if info.IsDir() || !strings.HasSuffix(path, ".md") {
@@ -139,264 +416,280 @@ func (v *Vault) ReadPlotFiles() (map[string]string, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(v.Root, path)
-		files[rel] = string(data)
+		result[rel] = string(data)
 		return nil
 	})
-	return files, err
+	if err != nil && !os.IsNotExist(err) {
+		return result, err
+	}
+	return result, nil
 }
 
-// ReadAllChapters reads all chapter files in order.
-func (v *Vault) ReadAllChapters() ([]NamedChapter, error) {
-	storyDir := filepath.Join(v.Root, "story")
-	entries, err := os.ReadDir(storyDir)
+// ReadStyleGuide reads style.md from the project root, if present.
+func (v *Vault) ReadStyleGuide() string {
+	data, err := os.ReadFile(filepath.Join(v.Root, "style.md"))
 	if err != nil {
-		return nil, fmt.Errorf("read story directory: %w", err)
+		return ""
 	}
-
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			names = append(names, e.Name())
-		}
-	}
-	sortChapterNames(names)
-
-	var chapters []NamedChapter
-	for _, name := range names {
-		data, err := os.ReadFile(filepath.Join(storyDir, name))
-		if err != nil {
-			return nil, fmt.Errorf("read chapter %s: %w", name, err)
-		}
-		chapters = append(chapters, NamedChapter{
-			Name:    strings.TrimSuffix(name, ".md"),
-			Content: string(data),
-		})
-	}
-	return chapters, nil
+	return string(data)
 }
 
-// ReadChaptersFrom reads all chapters starting from the named chapter (inclusive).
-func (v *Vault) ReadChaptersFrom(name string) ([]NamedChapter, error) {
-	all, err := v.ReadAllChapters()
+// ReadStage reads stage.md from the project root, if present. Authors
+// override the auto-derived stage block by writing this file.
+func (v *Vault) ReadStage() string {
+	data, err := os.ReadFile(filepath.Join(v.Root, "stage.md"))
 	if err != nil {
-		return nil, err
+		return ""
+	}
+	return string(data)
+}
+
+// DerivedStage builds a stage description from project frontmatter and
+// scene metadata. Used as the default when stage.md is absent.
+func (v *Vault) DerivedStage(p *Project, scenes []Scene) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Current Stage\n\n")
+	fmt.Fprintf(&b, "Project: %s\n", p.Title)
+	if p.Description != "" {
+		fmt.Fprintf(&b, "\n%s\n", p.Description)
 	}
 
-	if !strings.HasSuffix(name, ".md") {
-		name = name + ".md"
-	}
-	baseName := strings.TrimSuffix(name, ".md")
-
-	for i, ch := range all {
-		if ch.Name == baseName {
-			return all[i:], nil
+	scenesByChapter := make(map[int][]Scene)
+	wordsByChapter := make(map[int]int)
+	chaptersByAct := make(map[int]map[int]bool)
+	totalWords := 0
+	for _, s := range scenes {
+		scenesByChapter[s.Chapter] = append(scenesByChapter[s.Chapter], s)
+		wordsByChapter[s.Chapter] += s.Wordcount
+		totalWords += s.Wordcount
+		if chaptersByAct[s.Act] == nil {
+			chaptersByAct[s.Act] = make(map[int]bool)
 		}
-	}
-	return nil, fmt.Errorf("chapter %s not found", baseName)
-}
-
-// ReadPriorSummaries reads summaries for all chapters before the given chapter.
-// Returns them in order. Missing summaries are skipped.
-func (v *Vault) ReadPriorSummaries(name string) ([]NamedChapter, error) {
-	if !strings.HasSuffix(name, ".md") {
-		name = name + ".md"
-	}
-	baseName := strings.TrimSuffix(name, ".md")
-
-	chapters, err := v.ListChapterNames()
-	if err != nil {
-		return nil, err
+		chaptersByAct[s.Act][s.Chapter] = true
 	}
 
-	var summaries []NamedChapter
-	for _, ch := range chapters {
-		if ch == baseName {
-			break
-		}
-		path := filepath.Join(v.Root, "summary", ch+".md")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue // no summary for this chapter, skip
-		}
-		summaries = append(summaries, NamedChapter{Name: ch, Content: string(data)})
-	}
-	return summaries, nil
-}
+	fmt.Fprintf(&b, "\nDrafted so far: %d scenes, ~%d words.\n\n", len(scenes), totalWords)
 
-// NamedChapter pairs a chapter name with its content.
-type NamedChapter struct {
-	Name    string
-	Content string
-}
-
-// Sentinel separates the synthesis (which reviewers see) from the raw agent
-// outputs (which are retained for traceability but not fed to future reviews).
-const ReviewSentinel = "\n\n<!-- RAW AGENT OUTPUTS BELOW — NOT INCLUDED IN FUTURE REVIEW CONTEXT -->\n\n"
-
-// WriteReview writes a review file to review/ with a globally sequential number.
-// Format: NNN-prefix-timestamp.md (e.g., 003-manuscript-critic-2026-04-03-104209.md)
-// Returns the relative path and the review number.
-func (v *Vault) WriteReview(prefix string, content string) (string, int, error) {
-	dir := filepath.Join(v.Root, "review")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, err
-	}
-	num := v.NextReviewNumber()
-	timestamp := time.Now().Format("2006-01-02-150405")
-	filename := fmt.Sprintf("%03d-%s-%s.md", num, prefix, timestamp)
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", 0, err
-	}
-	rel, _ := filepath.Rel(v.Root, path)
-	return rel, num, nil
-}
-
-// NextReviewNumber scans all files in review/ for the highest leading number
-// and returns the next one. The sequence is global across all review types.
-func (v *Vault) NextReviewNumber() int {
-	dir := filepath.Join(v.Root, "review")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 1
-	}
-	maxNum := 0
-	for _, e := range entries {
-		name := e.Name()
-		// Parse NNN from NNN-prefix-timestamp.md
-		var n int
-		if _, err := fmt.Sscanf(name, "%d-", &n); err == nil && n > maxNum {
-			maxNum = n
-		}
-	}
-	return maxNum + 1
-}
-
-// ReadLatestReviewSynthesis reads the most recent review file matching a prefix,
-// but only returns the content above the sentinel (the synthesis + rebuttals).
-func (v *Vault) ReadLatestReviewSynthesis(prefix string) (string, error) {
-	content, err := v.ReadLatestReview(prefix)
-	if err != nil || content == "" {
-		return content, err
-	}
-	if idx := strings.Index(content, ReviewSentinel); idx >= 0 {
-		return content[:idx], nil
-	}
-	return content, nil
-}
-
-// ReadReviewByNumber reads a review file by its global sequence number.
-func (v *Vault) ReadReviewByNumber(num int) (string, string, error) {
-	dir := filepath.Join(v.Root, "review")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", "", fmt.Errorf("read review directory: %w", err)
-	}
-	target := fmt.Sprintf("%03d-", num)
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), target) {
-			path := filepath.Join(dir, e.Name())
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return "", "", err
+	if len(p.DefinedActs) > 0 {
+		fmt.Fprintf(&b, "## Acts\n\n")
+		for _, act := range p.DefinedActs {
+			label := p.ActLabels[act]
+			if label != "" {
+				fmt.Fprintf(&b, "- **Act %d — %s**", act, label)
+			} else {
+				fmt.Fprintf(&b, "- **Act %d**", act)
 			}
-			return string(data), e.Name(), nil
+			if chs := chaptersByAct[act]; len(chs) > 0 {
+				fmt.Fprintf(&b, " — %d chapter(s) with drafted scenes", len(chs))
+			} else {
+				fmt.Fprintf(&b, " — not yet drafted")
+			}
+			fmt.Fprintln(&b)
+			if desc := p.ActDescriptions[act]; desc != "" {
+				fmt.Fprintf(&b, "  %s\n", desc)
+			}
 		}
-	}
-	return "", "", fmt.Errorf("review #%03d not found", num)
-}
-
-// WriteStagedPart writes a named part to a staging directory for later assembly.
-func (v *Vault) WriteStagedPart(name, content string) error {
-	dir := filepath.Join(v.Root, "review", ".staging")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
-}
-
-// AssembleReview reads all staged parts in the given order, assembles them
-// with the sentinel, writes the final review file, and cleans up staging.
-func (v *Vault) AssembleReview(prefix string, synthesisKey string, partKeys []string) (string, int, error) {
-	dir := filepath.Join(v.Root, "review", ".staging")
-
-	// Read synthesis
-	synthesis, err := os.ReadFile(filepath.Join(dir, synthesisKey))
-	if err != nil {
-		return "", 0, fmt.Errorf("read staged synthesis: %w", err)
+		fmt.Fprintln(&b)
 	}
 
-	// Build raw outputs section
-	var rawParts []string
-	for _, key := range partKeys {
-		data, err := os.ReadFile(filepath.Join(dir, key))
-		if err != nil {
-			continue // skip missing parts
+	if len(p.DefinedChapters) > 0 {
+		fmt.Fprintf(&b, "## Chapters drafted\n\n")
+		for _, ch := range p.DefinedChapters {
+			label := p.ChapterLabels[ch]
+			scenesIn := len(scenesByChapter[ch])
+			words := wordsByChapter[ch]
+			head := fmt.Sprintf("Chapter %d", ch)
+			if label != "" {
+				head = fmt.Sprintf("Chapter %d: %s", ch, label)
+			}
+			if scenesIn == 0 {
+				fmt.Fprintf(&b, "- %s — not yet drafted\n", head)
+			} else {
+				fmt.Fprintf(&b, "- %s — %d scene(s), ~%d words\n", head, scenesIn, words)
+			}
 		}
-		rawParts = append(rawParts, string(data))
+		fmt.Fprintln(&b)
 	}
 
-	content := string(synthesis) + ReviewSentinel + strings.Join(rawParts, "\n\n---\n\n")
+	return b.String()
+}
 
-	relPath, num, err := v.WriteReview(prefix, content)
-	if err != nil {
-		return "", 0, err
+// ─── Frontmatter / wikilink utilities ─────────────────────────────────────
+
+var frontmatterRE = regexp.MustCompile(`(?s)^---\r?\n(.*?)\r?\n---\r?\n?(.*)$`)
+
+// extractFrontmatter parses a markdown file with YAML frontmatter. Returns
+// (frontmatterMap, body). On any parse error or missing frontmatter, returns
+// (nil, content).
+func extractFrontmatter(content string) (map[string]any, string) {
+	m := frontmatterRE.FindStringSubmatch(content)
+	if m == nil {
+		return nil, content
 	}
-
-	// Clean up staging
-	os.RemoveAll(dir)
-
-	return relPath, num, nil
+	var fm map[string]any
+	if err := yaml.Unmarshal([]byte(m[1]), &fm); err != nil {
+		return nil, content
+	}
+	return fm, m[2]
 }
 
-// WriteReviewFile overwrites a review file by name.
-func (v *Vault) WriteReviewFile(filename string, content string) error {
-	path := filepath.Join(v.Root, "review", filename)
-	return os.WriteFile(path, []byte(content), 0o644)
-}
+// wikilinkRE matches `[[anything-not-]]]`. Captures the inner text.
+var wikilinkRE = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
 
-// ReadLatestReview reads the most recent review file containing the given prefix.
-// Files are NNN-prefix-timestamp.md; we find the highest NNN that contains the prefix.
-func (v *Vault) ReadLatestReview(prefix string) (string, error) {
-	dir := filepath.Join(v.Root, "review")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
+// stripWikilinks replaces every `[[Link]]` with its display text. Mirrors
+// ExportService.stripWikiLinks:
+//   - `[[Alias|Display]]` → `Display`
+//   - `[[Path/To/Note]]`  → `Note` (last path segment)
+//   - `[[Simple]]`        → `Simple`
+func stripWikilinks(text string) string {
+	return wikilinkRE.ReplaceAllStringFunc(text, func(match string) string {
+		inner := match[2 : len(match)-2]
+		if i := strings.LastIndex(inner, "|"); i >= 0 {
+			return strings.TrimSpace(inner[i+1:])
 		}
-		return "", err
-	}
+		if i := strings.LastIndex(inner, "/"); i >= 0 {
+			return strings.TrimSpace(inner[i+1:])
+		}
+		return strings.TrimSpace(inner)
+	})
+}
 
-	var latest string
-	var latestNum int
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".md") {
+// cleanWikilink turns a wikilink-wrapped name into a plain entity name,
+// mirroring MetadataParser.cleanWikilink. Handles `[[Name]]`, `[[Name|Alias]]`,
+// `[[Path/To/Name]]`, `[[Name#heading]]`, and YAML-quoted variants.
+func cleanWikilink(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Strip stray YAML quotes.
+	if (strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`)) ||
+		(strings.HasPrefix(s, `'`) && strings.HasSuffix(s, `'`)) {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	if !strings.HasPrefix(s, "[[") || !strings.HasSuffix(s, "]]") {
+		return s
+	}
+	inner := s[2 : len(s)-2]
+	if i := strings.Index(inner, "|"); i >= 0 {
+		return strings.TrimSpace(inner[i+1:])
+	}
+	if i := strings.Index(inner, "#"); i >= 0 {
+		inner = inner[:i]
+	}
+	if i := strings.LastIndex(inner, "/"); i >= 0 {
+		inner = inner[i+1:]
+	}
+	return strings.TrimSpace(inner)
+}
+
+// cleanWikilinks normalizes a frontmatter value that may be a string, a list,
+// or nil into a deduplicated list of cleaned entity names.
+func cleanWikilinks(v any) []string {
+	if v == nil {
+		return nil
+	}
+	var raw []any
+	switch x := v.(type) {
+	case []any:
+		raw = x
+	case string:
+		raw = []any{x}
+	default:
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, item := range raw {
+		s := cleanWikilink(coerceString(item))
+		if s == "" || seen[s] {
 			continue
 		}
-		// Check if this file contains the prefix after the NNN-
-		if !strings.Contains(name, "-"+prefix+"-") {
-			continue
-		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// ─── YAML coercion helpers ────────────────────────────────────────────────
+
+func coerceString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case int:
+		return fmt.Sprintf("%d", x)
+	case int64:
+		return fmt.Sprintf("%d", x)
+	case float64:
+		return fmt.Sprintf("%g", x)
+	case bool:
+		return fmt.Sprintf("%t", x)
+	default:
+		return fmt.Sprintf("%v", x)
+	}
+}
+
+func coerceInt(v any) int {
+	return coerceIntDefault(v, 0)
+}
+
+func coerceIntDefault(v any, def int) int {
+	switch x := v.(type) {
+	case nil:
+		return def
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case string:
 		var n int
-		if _, err := fmt.Sscanf(name, "%d-", &n); err == nil && n > latestNum {
-			latestNum = n
-			latest = name
+		if _, err := fmt.Sscanf(strings.TrimSpace(x), "%d", &n); err == nil {
+			return n
 		}
+		return def
+	default:
+		return def
 	}
-
-	if latest == "" {
-		return "", nil
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, latest))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }
 
-// PageCount returns the number of pages for a text (words / 300).
+func coerceIntSlice(v any) []int {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []int
+	for _, item := range arr {
+		out = append(out, coerceInt(item))
+	}
+	return out
+}
+
+// coerceIntKeyedStringMap accepts YAML maps with either integer or string
+// keys and returns map[int]string. Used for definedActs labels etc.
+func coerceIntKeyedStringMap(v any) map[int]string {
+	out := make(map[int]string)
+	switch m := v.(type) {
+	case map[string]any:
+		for k, val := range m {
+			var n int
+			if _, err := fmt.Sscanf(k, "%d", &n); err == nil {
+				out[n] = coerceString(val)
+			}
+		}
+	case map[any]any:
+		for k, val := range m {
+			out[coerceInt(k)] = coerceString(val)
+		}
+	}
+	return out
+}
+
+// PageCount returns the number of pages for a text (words / 300, rounded up).
 func PageCount(text string) int {
 	words := len(strings.Fields(text))
 	pages := words / 300
@@ -406,376 +699,16 @@ func PageCount(text string) int {
 	return pages
 }
 
-// TotalPageCount counts pages across all chapters in the vault.
-func (v *Vault) TotalPageCount() int {
-	chapters, err := v.ReadAllChapters()
-	if err != nil {
-		return 0
-	}
-	totalWords := 0
-	for _, ch := range chapters {
-		totalWords += len(strings.Fields(ch.Content))
-	}
-	pages := totalWords / 300
-	if totalWords%300 > 0 {
-		pages++
-	}
-	return pages
-}
-
-// WriteSummary writes a chapter summary to summary/<chapter-name>.md.
-func (v *Vault) WriteSummary(chapterName string, content string) error {
-	dir := filepath.Join(v.Root, "summary")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if !strings.HasSuffix(chapterName, ".md") {
-		chapterName = chapterName + ".md"
-	}
-	return os.WriteFile(filepath.Join(dir, chapterName), []byte(content), 0o644)
-}
-
-// ListChapterNames returns the sorted list of chapter filenames (without .md extension).
-func (v *Vault) ListChapterNames() ([]string, error) {
-	storyDir := filepath.Join(v.Root, "story")
-	entries, err := os.ReadDir(storyDir)
-	if err != nil {
-		return nil, fmt.Errorf("read story directory: %w", err)
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+// TotalWordCount sums scene wordcounts. Falls back to counting words in
+// bodies if frontmatter wordcount is absent.
+func TotalWordCount(scenes []Scene) int {
+	total := 0
+	for _, s := range scenes {
+		if s.Wordcount > 0 {
+			total += s.Wordcount
+		} else {
+			total += len(strings.Fields(s.Body))
 		}
 	}
-	sortChapterNames(names)
-	return names, nil
-}
-
-// sortChapterNames sorts chapter filenames in place, honoring the Obsidian
-// convention that a leading underscore means "sort first" (used for
-// epigraphs, prologues, and other prefatory matter). Within each group
-// (underscore-prefixed vs. not), names sort lexicographically.
-func sortChapterNames(names []string) {
-	sort.Slice(names, func(i, j int) bool {
-		iUnder := strings.HasPrefix(names[i], "_")
-		jUnder := strings.HasPrefix(names[j], "_")
-		if iUnder != jUnder {
-			return iUnder
-		}
-		return names[i] < names[j]
-	})
-}
-
-// ReadIssues reads the issues.md file from the vault root, if it exists.
-func (v *Vault) ReadIssues() string {
-	data, err := os.ReadFile(filepath.Join(v.Root, "issues.md"))
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-// AppendIssue appends an issue entry under a heading in issues.md.
-// Creates the file and heading if they don't exist.
-func (v *Vault) AppendIssue(heading, entry string) error {
-	path := filepath.Join(v.Root, "issues.md")
-	existing, _ := os.ReadFile(path)
-	content := string(existing)
-
-	headingLine := "## " + heading
-	if content == "" {
-		content = "# Known Issues\n\nIssues acknowledged but deferred for later resolution. Reviewers: only re-raise these if the issue has escalated in importance.\n\n"
-	}
-
-	if !strings.Contains(content, headingLine) {
-		content = strings.TrimRight(content, "\n") + "\n\n" + headingLine + "\n\n"
-	}
-
-	// Insert the entry after the heading
-	idx := strings.Index(content, headingLine)
-	afterHeading := idx + len(headingLine)
-	// Find the end of this section (next ## or end of file)
-	rest := content[afterHeading:]
-	nextSection := strings.Index(rest[1:], "\n## ")
-	var insertAt int
-	if nextSection >= 0 {
-		insertAt = afterHeading + 1 + nextSection
-	} else {
-		insertAt = len(content)
-	}
-
-	newContent := content[:insertAt] + "\n" + entry + "\n" + content[insertAt:]
-	return os.WriteFile(path, []byte(strings.TrimRight(newContent, "\n")+"\n"), 0o644)
-}
-
-// ReadStyleGuide reads the style.md file from the vault root, if it exists.
-func (v *Vault) ReadStyleGuide() string {
-	data, err := os.ReadFile(filepath.Join(v.Root, "style.md"))
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-// ReadStage reads the stage.md file from the vault root, if it exists.
-// stage.md describes where the manuscript is in the drafting process
-// (e.g., "3/4 of first act, 30,000 / 120,000 words") so reviewers can
-// calibrate against the actual scope of the work rather than treating
-// it as a finished product.
-func (v *Vault) ReadStage() string {
-	data, err := os.ReadFile(filepath.Join(v.Root, "stage.md"))
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-// ReadReviewerMemory reads a reviewer's memory file.
-func (v *Vault) ReadReviewerMemory(role string) (string, error) {
-	path := filepath.Join(v.Root, "system", "reviewer-memory", role+".md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return string(data), nil
-}
-
-// WriteReviewerMemory writes a reviewer's memory file.
-func (v *Vault) WriteReviewerMemory(role string, content string) error {
-	dir := filepath.Join(v.Root, "system", "reviewer-memory")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, role+".md"), []byte(content), 0o644)
-}
-
-// WriteSnapshot concatenates all chapters in story/ in filename order and
-// writes the result to review/.snapshots/<prefix>-<timestamp>.md. Returns
-// the vault-relative path of the new snapshot and the vault-relative path
-// of the previous snapshot with the same prefix (or "" if none exists).
-func (v *Vault) WriteSnapshot(prefix string) (currentRel, priorRel string, err error) {
-	dir := filepath.Join(v.Root, "review", ".snapshots")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", err
-	}
-
-	chapters, err := v.ReadAllChapters()
-	if err != nil {
-		return "", "", err
-	}
-	if len(chapters) == 0 {
-		return "", "", fmt.Errorf("no chapters found in story/")
-	}
-
-	var b strings.Builder
-	for _, ch := range chapters {
-		fmt.Fprintf(&b, "--- %s ---\n%s\n\n", ch.Name, ch.Content)
-	}
-
-	// Locate the most recent prior snapshot for this prefix
-	priorRel = v.latestSnapshotRel(prefix)
-
-	timestamp := time.Now().Format("2006-01-02-150405")
-	filename := fmt.Sprintf("%s-%s.md", prefix, timestamp)
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return "", "", err
-	}
-
-	rel, _ := filepath.Rel(v.Root, path)
-	return rel, priorRel, nil
-}
-
-// latestSnapshotRel returns the vault-relative path of the most recent
-// snapshot for the given prefix. Returns "" if none exists.
-func (v *Vault) latestSnapshotRel(prefix string) string {
-	dir := filepath.Join(v.Root, "review", ".snapshots")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	var latest string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		if !strings.HasPrefix(name, prefix+"-") {
-			continue
-		}
-		if name > latest {
-			latest = name
-		}
-	}
-	if latest == "" {
-		return ""
-	}
-	rel, _ := filepath.Rel(v.Root, filepath.Join(dir, latest))
-	return rel
-}
-
-// SnapshotAndDiff writes a new snapshot, computes the diff against the prior
-// snapshot for the same prefix (if any), and writes the diff to a paired
-// `.diff` file alongside the new snapshot. Returns vault-relative paths and
-// the diff text. If there's no prior snapshot, diffPath and diffText are "".
-func (v *Vault) SnapshotAndDiff(prefix string) (snapshotPath, priorPath, diffPath, diffText string, err error) {
-	snapshotPath, priorPath, err = v.WriteSnapshot(prefix)
-	if err != nil {
-		return "", "", "", "", err
-	}
-	if priorPath == "" {
-		return snapshotPath, "", "", "", nil
-	}
-
-	diffText, err = v.DiffSnapshots(priorPath, snapshotPath)
-	if err != nil {
-		return snapshotPath, priorPath, "", "", err
-	}
-	if diffText == "" {
-		// Files identical — no diff file written.
-		return snapshotPath, priorPath, "", "", nil
-	}
-
-	// Pair the diff file with the snapshot: same basename, .diff extension.
-	diffAbs := filepath.Join(v.Root, snapshotPath)
-	diffAbs = strings.TrimSuffix(diffAbs, ".md") + ".diff"
-	if err := os.WriteFile(diffAbs, []byte(diffText), 0o644); err != nil {
-		return snapshotPath, priorPath, "", diffText, err
-	}
-	diffPath, _ = filepath.Rel(v.Root, diffAbs)
-	return snapshotPath, priorPath, diffPath, diffText, nil
-}
-
-// DiffSnapshots runs `diff -u prior current` and returns the unified diff
-// text. Paths may be vault-relative or absolute. Exit code 1 from diff
-// (files differ) is treated as success.
-func (v *Vault) DiffSnapshots(prior, current string) (string, error) {
-	priorAbs := prior
-	if !filepath.IsAbs(prior) {
-		priorAbs = filepath.Join(v.Root, prior)
-	}
-	currentAbs := current
-	if !filepath.IsAbs(current) {
-		currentAbs = filepath.Join(v.Root, current)
-	}
-	return runDiff(priorAbs, currentAbs)
-}
-
-func runDiff(prior, current string) (string, error) {
-	cmd := exec.Command("diff", "-u", prior, current)
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 1 {
-				return string(out), nil
-			}
-			return "", fmt.Errorf("diff: %w (stderr: %s)", err, string(exitErr.Stderr))
-		}
-		return "", err
-	}
-	return string(out), nil
-}
-
-// FetchDiff returns the unified diff between the most recent snapshot for
-// the given prefix and the one before it. If chapter is non-empty, only
-// the section of the diff that pertains to that chapter is returned.
-// Returns "" if there's only one snapshot (no prior to diff against), or
-// if the requested chapter exists in neither snapshot.
-//
-// Chapter sections are delimited by "--- <name> ---" headers written by
-// WriteSnapshot. The chapter argument may include or omit the ".md" suffix.
-func (v *Vault) FetchDiff(prefix, chapter string) (string, error) {
-	if prefix == "" {
-		prefix = "manuscript"
-	}
-
-	dir := filepath.Join(v.Root, "review", ".snapshots")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	var matches []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		if !strings.HasPrefix(name, prefix+"-") {
-			continue
-		}
-		matches = append(matches, name)
-	}
-	if len(matches) < 2 {
-		return "", nil
-	}
-	sort.Strings(matches)
-	current := filepath.Join(dir, matches[len(matches)-1])
-	prior := filepath.Join(dir, matches[len(matches)-2])
-
-	if chapter == "" {
-		return runDiff(prior, current)
-	}
-
-	priorSection, err := extractChapterSection(prior, chapter)
-	if err != nil {
-		return "", fmt.Errorf("read prior snapshot: %w", err)
-	}
-	currentSection, err := extractChapterSection(current, chapter)
-	if err != nil {
-		return "", fmt.Errorf("read current snapshot: %w", err)
-	}
-	if priorSection == "" && currentSection == "" {
-		return "", nil
-	}
-	if priorSection == currentSection {
-		return "", nil
-	}
-
-	tmp, err := os.MkdirTemp("", "critic-diff-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(tmp)
-
-	priorTmp := filepath.Join(tmp, "prior.md")
-	currentTmp := filepath.Join(tmp, "current.md")
-	if err := os.WriteFile(priorTmp, []byte(priorSection), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(currentTmp, []byte(currentSection), 0o644); err != nil {
-		return "", err
-	}
-	return runDiff(priorTmp, currentTmp)
-}
-
-// extractChapterSection returns the text between "--- <chapter> ---" and
-// the next "--- " marker (or EOF). Returns "" if the chapter isn't in the
-// file.
-func extractChapterSection(path, chapter string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	text := string(data)
-	name := strings.TrimSuffix(chapter, ".md")
-	marker := "--- " + name + " ---"
-
-	idx := strings.Index(text, marker)
-	if idx < 0 {
-		return "", nil
-	}
-	rest := text[idx:]
-	after := rest[len(marker):]
-	next := strings.Index(after, "\n--- ")
-	if next < 0 {
-		return rest, nil
-	}
-	return rest[:len(marker)+next+1], nil
+	return total
 }

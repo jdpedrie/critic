@@ -13,24 +13,26 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// appendManuscript reads all chapters in order from `vaultPath`/story and
-// appends them to userPrompt under a clear marker. Returns the augmented
-// prompt; on read error, returns the original prompt unchanged.
+// appendManuscript loads the storyline manuscript at `vaultPath` and appends
+// it to userPrompt under a clear marker. On any error, returns the prompt
+// unchanged so callers see the underlying issue at the operation level rather
+// than silently failing on prompt assembly.
 func appendManuscript(userPrompt, vaultPath string) string {
 	if vaultPath == "" {
 		return userPrompt
 	}
-	v := vault.New(vaultPath)
-	chapters, err := v.ReadAllChapters()
-	if err != nil || len(chapters) == 0 {
+	v, err := vault.New(vaultPath)
+	if err != nil {
+		return userPrompt
+	}
+	manuscript, err := v.ReadManuscript()
+	if err != nil || strings.TrimSpace(manuscript) == "" {
 		return userPrompt
 	}
 	var b strings.Builder
 	b.WriteString(userPrompt)
 	b.WriteString("\n\n=== MANUSCRIPT ===\n\n")
-	for _, ch := range chapters {
-		fmt.Fprintf(&b, "--- %s ---\n%s\n\n", ch.Name, ch.Content)
-	}
+	b.WriteString(manuscript)
 	return b.String()
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jdp/critic/server/agent"
@@ -13,6 +15,26 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// filepathBase is a tiny alias to keep call sites tidy. We import path/filepath
+// for a single helper; this lets readers see intent at the callsite.
+func filepathBase(p string) string { return filepath.Base(p) }
+
+// concatNamedFiles joins a map of file paths → content into a single markdown
+// block, with `### <path>` headers between files. Keys are sorted so output is
+// stable for diffing and caching.
+func concatNamedFiles(files map[string]string) string {
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, "### %s\n\n%s\n\n", k, strings.TrimSpace(files[k]))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
 func normalizeIssueID(id string) string {
 	id = strings.TrimSpace(id)
@@ -123,7 +145,10 @@ func main() {
 			mcp.WithString("content", mcp.Required(), mcp.Description("Content for this part")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			name, _ := req.RequireString("name")
 			content, _ := req.RequireString("content")
 			if err := v.WriteStagedPart(name, content); err != nil {
@@ -143,7 +168,10 @@ func main() {
 			mcp.WithString("raw_parts", mcp.Required(), mcp.Description("Comma-separated names of staged parts for the raw outputs section (below the sentinel), in order")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			prefix, _ := req.RequireString("prefix")
 			synthesisPart, _ := req.RequireString("synthesis_part")
 			rawPartsStr, _ := req.RequireString("raw_parts")
@@ -175,38 +203,320 @@ func main() {
 		makeSaveReviewHandler(),
 	)
 
-	// list-chapters
+	// read-stage
 	s.AddTool(
-		mcp.NewTool("list-chapters",
-			mcp.WithDescription("List all chapter names in the vault's story/ directory."),
+		mcp.NewTool("read-stage",
+			mcp.WithDescription("Return the draft-stage block to inject as `=== CURRENT DRAFT STAGE ===` for reviewers. If <vault>/stage.md exists, returns its contents verbatim (author override). Otherwise synthesizes a stage description from the storyline project frontmatter (acts, chapters, labels) and scene metadata."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
-			names, err := v.ListChapterNames()
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			if override := v.ReadStage(); strings.TrimSpace(override) != "" {
+				return mcp.NewToolResultText(override), nil
+			}
+			p, err := v.ReadProject()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("list chapters: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read project: %v", err)), nil
+			}
+			scenes, err := v.ReadScenes()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			}
+			return mcp.NewToolResultText(v.DerivedStage(p, scenes)), nil
+		},
+	)
+
+	// read-style-guide
+	s.AddTool(
+		mcp.NewTool("read-style-guide",
+			mcp.WithDescription("Return the project's style guide. Looks for <vault>/style.md first; falls back to <vault>/Research/style.md if the root file is absent. Returns empty string if neither exists."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			if content := v.ReadStyleGuide(); strings.TrimSpace(content) != "" {
+				return mcp.NewToolResultText(content), nil
+			}
+			research, _ := v.ReadResearchFiles()
+			for path, content := range research {
+				if strings.EqualFold(filepathBase(path), "style.md") {
+					return mcp.NewToolResultText(content), nil
+				}
+			}
+			return mcp.NewToolResultText(""), nil
+		},
+	)
+
+	// read-research
+	s.AddTool(
+		mcp.NewTool("read-research",
+			mcp.WithDescription("Concatenate every markdown file under <vault>/Research/ into one block, with `### <relative-path>` headers between files. Use to inline worldbuilding context for reviewers."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			files, err := v.ReadResearchFiles()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read research: %v", err)), nil
+			}
+			return mcp.NewToolResultText(concatNamedFiles(files)), nil
+		},
+	)
+
+	// read-codex
+	s.AddTool(
+		mcp.NewTool("read-codex",
+			mcp.WithDescription("Concatenate Codex entries (Characters + Locations) into one block, with `### <relative-path>` headers. Pass `names` (comma-separated entity names matching filenames without .md) to filter; omit for all entries. Use to inline character/location reference data for reviewers."),
+			vaultParam,
+			mcp.WithString("names", mcp.Description("Comma-separated list of entity names (filenames without .md). Omit or pass empty for all entries.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			var names []string
+			if raw := optString(req, "names"); raw != "" {
+				for _, n := range strings.Split(raw, ",") {
+					if n = strings.TrimSpace(n); n != "" {
+						names = append(names, n)
+					}
+				}
+			}
+			files, err := v.ReadCodexEntries(names)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read codex: %v", err)), nil
+			}
+			return mcp.NewToolResultText(concatNamedFiles(files)), nil
+		},
+	)
+
+	// read-codex-entry
+	s.AddTool(
+		mcp.NewTool("read-codex-entry",
+			mcp.WithDescription("Read a single Codex entry by name (filename without .md). Searches Characters/ then Locations/. Use for on-demand lookups by Claude when reviewing prose."),
+			vaultParam,
+			mcp.WithString("name", mcp.Required(), mcp.Description("Entity name, matching the filename without .md (e.g. \"Henry Nelson\", \"Fontenoy Harbor\").")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			name, _ := req.RequireString("name")
+			content, err := v.ReadCodexEntry(name)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return mcp.NewToolResultError(fmt.Sprintf("no Codex entry named %q", name)), nil
+				}
+				return mcp.NewToolResultError(fmt.Sprintf("read codex entry: %v", err)), nil
+			}
+			return mcp.NewToolResultText(content), nil
+		},
+	)
+
+	// assemble-manuscript
+	s.AddTool(
+		mcp.NewTool("assemble-manuscript",
+			mcp.WithDescription("Return the full manuscript assembled from the storyline project's Scenes/ folder, in the same Markdown format the storyline plugin's `Export project` command produces (# Title, ## Act N: <label>, ### Chapter N: <label>, #### <scene title>, body). Use to inline the manuscript for Claude subagents."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			manuscript, err := v.ReadManuscript()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("assemble manuscript: %v", err)), nil
+			}
+			return mcp.NewToolResultText(manuscript), nil
+		},
+	)
+
+	// list-codex-entries
+	s.AddTool(
+		mcp.NewTool("list-codex-entries",
+			mcp.WithDescription("List every Codex entry name (filename without .md), from Codex/Characters/ and Codex/Locations/. Returns one name per line, sorted. Use to give a subagent the canonical entity roster so it can flag prose mentions of unknown entities."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			names, err := v.ListCodexEntries()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("list codex entries: %v", err)), nil
 			}
 			return mcp.NewToolResultText(strings.Join(names, "\n")), nil
 		},
 	)
 
-	// summarize-chapter
+	// find-entity-mentions
 	s.AddTool(
-		mcp.NewTool("summarize-chapter",
-			mcp.WithDescription("Read a single chapter and generate a summary. Returns the chapter text for the agent to summarize."),
+		mcp.NewTool("find-entity-mentions",
+			mcp.WithDescription("Scan every scene in the storyline project for case-insensitive substring matches of an entity name. Returns JSON array `[{filename, act, chapter, sequence, title, body}]` of scenes that mention the entity, in manuscript order. Use for entity-mode canon extraction (gather all mentions of one entity across the book in a single call)."),
 			vaultParam,
-			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter filename (e.g. chapter-01)")),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Entity name to search for (case-insensitive substring match against scene body text).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
-			chapter, _ := req.RequireString("chapter")
-			text, err := v.ReadChapter(chapter)
-			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read chapter: %v", err)), nil
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
 			}
-			pages := vault.PageCount(text)
-			return mcp.NewToolResultText(fmt.Sprintf("Chapter: %s (~%d pages)\n\n%s", chapter, pages, text)), nil
+			name, _ := req.RequireString("name")
+			needle := strings.ToLower(strings.TrimSpace(name))
+			if needle == "" {
+				return mcp.NewToolResultError("name is empty"), nil
+			}
+			scenes, err := v.ReadScenes()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			}
+			type match struct {
+				Filename string `json:"filename"`
+				Act      int    `json:"act"`
+				Chapter  int    `json:"chapter"`
+				Sequence int    `json:"sequence"`
+				Title    string `json:"title"`
+				Body     string `json:"body"`
+			}
+			var hits []match
+			for _, s := range scenes {
+				if !strings.Contains(strings.ToLower(s.Body), needle) {
+					continue
+				}
+				hits = append(hits, match{
+					Filename: s.Filename,
+					Act:      s.Act,
+					Chapter:  s.Chapter,
+					Sequence: s.Sequence,
+					Title:    s.Title,
+					Body:     s.Body,
+				})
+			}
+			data, _ := json.Marshal(hits)
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// assemble-chapter
+	s.AddTool(
+		mcp.NewTool("assemble-chapter",
+			mcp.WithDescription("Return the assembled text of one chapter (all scenes for the given chapter number, sorted by sequence, formatted as `### Chapter N: <label>\\n\\n#### <scene title>\\n\\n<body>`) plus the union of entity names referenced in those scenes' frontmatter (POV, characters, location). Response is JSON: {text, entities, scene_count}. Use to scope a chapter review and prefilter Codex."),
+			vaultParam,
+			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter number (integer, matches the `chapter:` frontmatter field on scenes).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			chapterStr, _ := req.RequireString("chapter")
+			var chapter int
+			if _, err := fmt.Sscanf(strings.TrimSpace(chapterStr), "%d", &chapter); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("chapter must be an integer: %q", chapterStr)), nil
+			}
+			p, err := v.ReadProject()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read project: %v", err)), nil
+			}
+			scenes, err := v.ReadScenes()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			}
+			var chScenes []vault.Scene
+			for _, s := range scenes {
+				if s.Chapter == chapter {
+					chScenes = append(chScenes, s)
+				}
+			}
+			if len(chScenes) == 0 {
+				return mcp.NewToolResultError(fmt.Sprintf("no scenes found for chapter %d", chapter)), nil
+			}
+			text := vault.RenderChapter(p, chapter, chScenes)
+			entities := vault.SceneEntityNames(chScenes)
+			data, _ := json.Marshal(map[string]any{
+				"text":        text,
+				"entities":    entities,
+				"scene_count": len(chScenes),
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// read-scene
+	s.AddTool(
+		mcp.NewTool("read-scene",
+			mcp.WithDescription("Return one scene's assembled text (`#### <title>\\n\\n<body>`, wikilinks stripped) plus the entity names from its frontmatter. Response is JSON: {text, entities, act, chapter, sequence, title}. Use to scope a single-scene review and prefilter Codex."),
+			vaultParam,
+			mcp.WithString("scene", mcp.Required(), mcp.Description("Scene filename, with or without .md (e.g. \"01-01 Customs at Fontenoy\" or \"01-01 Customs at Fontenoy.md\").")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			sceneArg, _ := req.RequireString("scene")
+			sceneArg = strings.TrimSuffix(strings.TrimSpace(sceneArg), ".md")
+			scenes, err := v.ReadScenes()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			}
+			var found *vault.Scene
+			for i := range scenes {
+				if scenes[i].Filename == sceneArg {
+					found = &scenes[i]
+					break
+				}
+			}
+			if found == nil {
+				return mcp.NewToolResultError(fmt.Sprintf("scene %q not found in Scenes/", sceneArg)), nil
+			}
+			text := vault.RenderScene(*found)
+			entities := vault.SceneEntityNames([]vault.Scene{*found})
+			data, _ := json.Marshal(map[string]any{
+				"text":     text,
+				"entities": entities,
+				"act":      found.Act,
+				"chapter":  found.Chapter,
+				"sequence": found.Sequence,
+				"title":    found.Title,
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// list-scenes
+	s.AddTool(
+		mcp.NewTool("list-scenes",
+			mcp.WithDescription("List every scene in the storyline project, one per line, formatted as `act/chapter/sequence | filename | title`. Sorted in manuscript order (act → chapter → sequence)."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			scenes, err := v.ReadScenes()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			}
+			var b strings.Builder
+			for _, s := range scenes {
+				fmt.Fprintf(&b, "%d/%d/%d | %s | %s\n", s.Act, s.Chapter, s.Sequence, s.Filename, s.Title)
+			}
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
 		},
 	)
 
@@ -219,7 +529,10 @@ func main() {
 			mcp.WithString("content", mcp.Required(), mcp.Description("The summary content to write")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			chapter, _ := req.RequireString("chapter")
 			content, _ := req.RequireString("content")
 			if err := v.WriteSummary(chapter, content); err != nil {
@@ -236,7 +549,10 @@ func main() {
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			content := v.ReadIssues()
 			if content == "" {
 				return mcp.NewToolResultText("No issues.md file found."), nil
@@ -254,7 +570,10 @@ func main() {
 			mcp.WithString("entry", mcp.Required(), mcp.Description("The issue entry text (should include the issue ID if from a review)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			heading, _ := req.RequireString("heading")
 			entry, _ := req.RequireString("entry")
 			if err := v.AppendIssue(heading, entry); err != nil {
@@ -271,7 +590,10 @@ func main() {
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			num := v.NextReviewNumber()
 			return mcp.NewToolResultText(fmt.Sprintf("%d", num)), nil
 		},
@@ -285,7 +607,10 @@ func main() {
 			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			prefix, _ := req.RequireString("prefix")
 			snapshotPath, priorPath, diffPath, diffText, err := v.SnapshotAndDiff(prefix)
 			if err != nil {
@@ -309,7 +634,10 @@ func main() {
 			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			prefix, _ := req.RequireString("prefix")
 			path, priorPath, err := v.WriteSnapshot(prefix)
 			if err != nil {
@@ -332,7 +660,10 @@ func main() {
 			mcp.WithString("current", mcp.Required(), mcp.Description("Path to the newer snapshot.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			v := vaultFromReq(req)
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 			prior, _ := req.RequireString("prior")
 			current, _ := req.RequireString("current")
 			out, err := v.DiffSnapshots(prior, current)
@@ -398,15 +729,23 @@ func main() {
 	}
 }
 
-func vaultFromReq(req mcp.CallToolRequest) *vault.Vault {
+func vaultFromReq(req mcp.CallToolRequest) (*vault.Vault, error) {
 	path, _ := req.RequireString("vault")
 	return vault.New(path)
+}
+
+// vaultErr renders a vault-open failure as a tool error result.
+func vaultErr(err error) *mcp.CallToolResult {
+	return mcp.NewToolResultError(fmt.Sprintf("open vault: %v", err))
 }
 
 
 func makeReadIssueHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		v := vaultFromReq(req)
+		v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
 
 		// Extract review number from issue ID (ISSUE-003-01 → 3)
@@ -454,7 +793,10 @@ func makeReadIssueHandler() server.ToolHandlerFunc {
 
 func makeAddRebuttalHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		v := vaultFromReq(req)
+		v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
 		rebuttal, _ := req.RequireString("rebuttal")
 
@@ -519,7 +861,10 @@ func makeAddRebuttalHandler() server.ToolHandlerFunc {
 
 func makeSaveReviewHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		v := vaultFromReq(req)
+		v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 		prefix, _ := req.RequireString("prefix")
 		content, _ := req.RequireString("content")
 
@@ -534,7 +879,10 @@ func makeSaveReviewHandler() server.ToolHandlerFunc {
 
 func makeUpdateMemoryHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		v := vaultFromReq(req)
+		v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
 		role, _ := req.RequireString("role")
 		content, _ := req.RequireString("content")
 

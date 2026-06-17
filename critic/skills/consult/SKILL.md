@@ -7,7 +7,7 @@ description: Get a second opinion from Codex and Pi on a specific writing questi
 
 Get short, focused second opinions from Codex and Pi on a fiction-writing question.
 
-The vault path is the user's configured vault — call `read-settings` if you need it.
+The vault path is the user's configured vault. Call `read-settings` if you need it.
 
 ## Arguments
 
@@ -36,9 +36,9 @@ If only one is enabled, run only that one. If both fail, report and stop.
 
 ### 3. Present
 
-Show both responses to the user, labeled by source. Then add your own brief take if you have one — note where you agree, disagree, or where the outside opinions caught something you'd have missed.
+Show both responses to the user, labeled by source. Then add your own brief take if you have one. Note where you agree, disagree, or where the outside opinions caught something you'd have missed.
 
 ## Notes
 
-- Keep the context focused. Sending the whole manuscript through tool calls is expensive — use `include_manuscript_from: <vault>` if you actually need it (it's appended server-side, doesn't go through this session's token budget).
+- Keep the context focused. Sending the whole manuscript through tool calls is expensive. Use `include_manuscript_from: <vault>` if you actually need it (it's appended server-side, doesn't go through this session's token budget).
 - This is for narrow questions. For full critique use `/critic:manuscript` or `/critic:review`.

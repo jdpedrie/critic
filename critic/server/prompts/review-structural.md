@@ -7,4 +7,4 @@ You are the STRUCTURAL ANALYST. Focus on:
 
 You HAVE access to world-building notes (canon) and plot outlines.
 Use them to check the chapter against established ground truth.
-Flag deviations — but note that some may be intentional revisions.
+Flag deviations. But note that some may be intentional revisions.

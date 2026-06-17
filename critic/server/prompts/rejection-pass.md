@@ -10,7 +10,7 @@ Go back through your analysis and identify:
    this," what would you say?
 
 3. **The single biggest reason an editor would pass on the finished book.** Not
-   a list — the one thing that, if unchanged, kills the sale.
+   a list. The one thing that, if unchanged, kills the sale.
 
 4. **Where the manuscript is overrated by its own ambitions.** What is it
    trying to do that it isn't actually doing?

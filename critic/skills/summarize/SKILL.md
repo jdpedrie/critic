@@ -1,48 +1,47 @@
 ---
 name: summarize
-description: Read and summarize each chapter, writing summaries to the summary/ directory. Use when the user wants chapter summaries generated or updated.
+description: Generate a per-chapter summary for every chapter in the storyline project. Writes one file per chapter to <vault>/summary/. Use when the user wants chapter summaries refreshed.
 ---
 
 # Summarize Chapters
 
-Read each chapter and write a summary to `summary/<chapter-name>.md`.
+Produce one summary per chapter of the storyline project, written to `<vault>/summary/chapter-<NN>.md`. Run non-interactively.
 
-The vault path for all tool calls is: ${user_config.vault_path}
+The vault path is the user's configured storyline project. Call `read-settings` if you don't already know it.
 
 ## Workflow
 
-Run non-interactively through all chapters.
+### Step 1: Enumerate chapters
 
-### Step 1 — List Chapters
+Call `list-scenes(vault: <vault>)`. Parse the `<act>/<chapter>/<sequence>` segment of each line. Build the set of distinct chapter numbers in manuscript order.
 
-Call `list-chapters` with the vault path to get all chapter names.
+### Step 2: Summarize each chapter, sequentially
 
-### Step 2 — Summarize Each Chapter
+For each chapter number (in order):
 
-For each chapter, sequentially:
+1. Call `assemble-chapter(vault: <vault>, chapter: <N>)`. The response gives `{text, entities, scene_count}`.
 
-1. Call `summarize-chapter` with the vault path and chapter name. This returns the chapter text.
-
-2. Write a summary of the chapter. The summary should include:
-   - **Setting**: Where and when the chapter takes place
-   - **Characters**: Who appears and their role in the chapter
-   - **Events**: What happens, in order — the key plot beats
-   - **State changes**: How characters, relationships, or situations change by the end
-   - **Threads**: What threads are opened, advanced, or closed
+2. Compose the summary yourself (no subagent). The summary should cover:
+   - Setting: where and when (in-story) the chapter takes place
+   - Characters: who appears and their role in the chapter
+   - Events: what happens, in order: the key plot beats
+   - State changes: how characters, relationships, or situations change by the end
+   - Threads: what threads are opened, advanced, or closed
    - A brief note on tone and pacing
 
-   Keep each summary to roughly 200-400 words. Be factual, not evaluative — this is a reference document, not a review.
+   Target 200–400 words. Be factual, not evaluative. This is a reference document, not a review.
 
-3. Call `write-summary` with the vault path, chapter name, and the summary content.
+3. Write the summary to `<vault>/summary/chapter-<NN>.md` where `<NN>` is the chapter number zero-padded to two digits. Use the parent's `Write` tool directly (no MCP needed). Overwrite any existing file.
 
-4. Report progress: "Saved summary for [chapter name]"
+4. Report progress: "Saved summary for chapter <N>".
 
-### Step 3 — Report
+### Step 3: Report
 
-After all chapters are done, report the total number of chapters summarized.
+After all chapters are done, report the total count.
 
 ## Important Notes
 
-- Process chapters one at a time, sequentially. Do not parallelize — this keeps context manageable.
-- If a summary already exists, overwrite it with the new version.
-- These summaries are reference documents for the author, not reviews. Be neutral and precise.
+- Process chapters sequentially, not in parallel. Keeps context manageable and makes progress legible.
+- Always overwrite. Re-running this skill should produce a fresh set of summaries that reflects the current scenes.
+- The summary is factual reference text for the author. No verdicts, no commentary on craft.
+- Summaries are NOT used by `/critic:manuscript` or `/critic:review`. Those skills read scenes directly. Summaries exist for your (the author's) own reference.

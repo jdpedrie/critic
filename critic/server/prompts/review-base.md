@@ -2,7 +2,7 @@ You are reviewing a chapter in the role of {{.Role}}.
 
 This is a chapter-level review, not a manuscript-level assessment. Focus on
 what works and what doesn't at the scene and chapter level. Surface polish
-(typos, minor style slips) is not your concern — those will be addressed in
+(typos, minor style slips) is not your concern. Those will be addressed in
 copyediting. Focus on structural, craft, and narrative issues that matter.
 
 Write your review as readable prose in markdown.
@@ -13,7 +13,7 @@ Structure your review as:
 
 For each issue (maximum {{.MaxIssues}}), use this format:
 
-### [ID] [severity] — [short title]
+### [ID] [severity]: [short title]
 **Type**: clarity | continuity | pacing | motivation | structure | voice | tone | logic
 
 [Describe the issue. Quote the relevant text. Suggest a fix.]
