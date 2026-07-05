@@ -102,18 +102,27 @@ func (p *Pi) Resume(ctx context.Context, sessionID, userPrompt string) (string, 
 	return response, nil
 }
 
-// ListModels runs `pi --list-models` and returns the raw output.
-// Output format is whatever the pi CLI produces — callers should pass it
-// straight back to the user.
+// ListModels runs `pi --list-models` and returns the raw output. Callers
+// should pass it straight back to the user.
+//
+// The pi CLI prints the model table to stderr (stdout stays empty), so we
+// capture both and prefer whichever has content.
 func (p *Pi) ListModels(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "pi", "--list-models")
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("pi --list-models: %w\nstderr: %s", err, stderr.String())
 	}
-	return strings.TrimSpace(string(out)), nil
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		out = strings.TrimSpace(stderr.String())
+	}
+	if out == "" {
+		return "", fmt.Errorf("pi --list-models produced no output on stdout or stderr")
+	}
+	return out, nil
 }
 
 func (p *Pi) resolve(provider, model string) (string, string) {
