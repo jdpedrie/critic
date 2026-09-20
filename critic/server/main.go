@@ -83,6 +83,13 @@ func main() {
 		claudeAgent = agent.NewClaude(cfg.Claude.Model)
 	}
 
+	// Invocations outlive the tool calls that start them. A full-manuscript
+	// review runs for minutes and an MCP tool call cannot stay open that long,
+	// so the work is rooted at the server's context, not any request's.
+	rootCtx, stopJobs := context.WithCancel(context.Background())
+	defer stopJobs()
+	jobs := NewJobs(rootCtx, jobDir())
+
 	s := server.NewMCPServer(
 		"critic",
 		"0.1.0",
@@ -97,13 +104,14 @@ func main() {
 	if codexAgent != nil {
 		s.AddTool(
 			mcp.NewTool("invoke-codex",
-				mcp.WithDescription("Invoke Codex with a system + user prompt. Returns {response, session_id}. Pass session_id to resume a prior conversation. Set include_manuscript_from to a vault path to have the server append the manuscript text to the user prompt (avoids passing it through the tool call)."),
+				mcp.WithDescription("Invoke Codex with a system + user prompt. Returns {response, session_id}. Pass session_id to resume a prior conversation. Set include_manuscript_from to a vault path to have the server append the manuscript text to the user prompt (avoids passing it through the tool call). Long calls do not block to completion: if the work outlasts wait_seconds the call returns {status:\"running\", job_id}, the work continues server-side, and you collect the result with invoke-status. A full-manuscript review always takes this path."),
 				mcp.WithString("system_prompt", mcp.Required(), mcp.Description("System prompt (role, framing, instructions)")),
 				mcp.WithString("user_prompt", mcp.Required(), mcp.Description("User prompt (the actual question or task)")),
 				mcp.WithString("session_id", mcp.Description("Session ID from a previous invoke-codex call to resume")),
 				mcp.WithString("include_manuscript_from", mcp.Description("Vault path. If set, the server appends '=== MANUSCRIPT ===' followed by all chapters in order to the user prompt.")),
+				mcp.WithNumber("wait_seconds", mcp.Description("How long this call may block before returning a job handle. Default 60, max 300. Long work keeps running either way; collect it with invoke-status.")),
 			),
-			makeInvokeCodexHandler(codexAgent),
+			makeInvokeCodexHandler(codexAgent, jobs),
 		)
 	}
 
@@ -111,13 +119,14 @@ func main() {
 	if claudeAgent != nil {
 		s.AddTool(
 			mcp.NewTool("invoke-claude",
-				mcp.WithDescription("Invoke Claude (headless `claude -p`) with a system + user prompt. Returns {response, session_id}. Pass session_id to resume a prior conversation (real server-side session resume). Set include_manuscript_from to append manuscript text server-side. Intended for non-Claude leaders (e.g. Codex CLI orchestrating a review); inside a Claude Code session, prefer Task subagents."),
+				mcp.WithDescription("Invoke Claude (headless `claude -p`) with a system + user prompt. Returns {response, session_id}. Pass session_id to resume a prior conversation (real server-side session resume). Set include_manuscript_from to append manuscript text server-side. Intended for non-Claude leaders (e.g. Codex CLI orchestrating a review); inside a Claude Code session, prefer Task subagents. Long calls do not block to completion: if the work outlasts wait_seconds the call returns {status:\"running\", job_id}, the work continues server-side, and you collect the result with invoke-status. A full-manuscript review always takes this path."),
 				mcp.WithString("system_prompt", mcp.Required(), mcp.Description("System prompt (role, framing, instructions). Replaces the CLI's default system prompt.")),
 				mcp.WithString("user_prompt", mcp.Required(), mcp.Description("User prompt (the actual question or task)")),
 				mcp.WithString("session_id", mcp.Description("Session ID from a previous invoke-claude call to resume")),
 				mcp.WithString("include_manuscript_from", mcp.Description("Vault path. If set, server appends '=== MANUSCRIPT ===' plus the assembled manuscript to the user prompt.")),
+				mcp.WithNumber("wait_seconds", mcp.Description("How long this call may block before returning a job handle. Default 60, max 300. Long work keeps running either way; collect it with invoke-status.")),
 			),
-			makeInvokeClaudeHandler(claudeAgent),
+			makeInvokeClaudeHandler(claudeAgent, jobs),
 		)
 	}
 
@@ -125,17 +134,28 @@ func main() {
 	if piAgent != nil {
 		s.AddTool(
 			mcp.NewTool("invoke-pi",
-				mcp.WithDescription("Invoke the pi harness (https://pi.dev) with a system + user prompt. Returns {response, session_id}. Pass session_id to resume. Provider/model can be overridden per call (only honored on new sessions; resumed sessions use the original provider/model). Set include_manuscript_from to append manuscript text server-side."),
+				mcp.WithDescription("Invoke the pi harness (https://pi.dev) with a system + user prompt. Returns {response, session_id}. Pass session_id to resume. Provider/model can be overridden per call (only honored on new sessions; resumed sessions use the original provider/model). Set include_manuscript_from to append manuscript text server-side. Long calls do not block to completion: if the work outlasts wait_seconds the call returns {status:\"running\", job_id}, the work continues server-side, and you collect the result with invoke-status. A full-manuscript review always takes this path."),
 				mcp.WithString("system_prompt", mcp.Required(), mcp.Description("System prompt")),
 				mcp.WithString("user_prompt", mcp.Required(), mcp.Description("User prompt")),
 				mcp.WithString("session_id", mcp.Description("Session ID from a previous invoke-pi call to resume")),
 				mcp.WithString("provider", mcp.Description("Pi provider (e.g. anthropic, openai, google). Defaults to config.")),
 				mcp.WithString("model", mcp.Description("Pi model. Defaults to config.")),
 				mcp.WithString("include_manuscript_from", mcp.Description("Vault path. If set, server appends manuscript text to user_prompt.")),
+				mcp.WithNumber("wait_seconds", mcp.Description("How long this call may block before returning a job handle. Default 60, max 300. Long work keeps running either way; collect it with invoke-status.")),
 			),
-			makeInvokePiHandler(piAgent),
+			makeInvokePiHandler(piAgent, jobs),
 		)
 	}
+
+	// invoke-status
+	s.AddTool(
+		mcp.NewTool("invoke-status",
+			mcp.WithDescription("Collect an invocation started by invoke-codex / invoke-pi / invoke-claude. Returns the same {response, session_id} shape once finished, or {status:\"running\"} to poll again. Blocks up to wait_seconds waiting for completion, so polling is cheap. Call with no job_id to list every job the server knows about, including finished ones and their output files."),
+			mcp.WithString("job_id", mcp.Description("Job ID from an invoke-* call. Omit to list all known jobs.")),
+			mcp.WithNumber("wait_seconds", mcp.Description("How long to wait for the job to finish before answering. Default 60, max 300.")),
+		),
+		makeInvokeStatusHandler(jobs),
+	)
 
 	// pi-list-models
 	if piAgent != nil {
@@ -761,13 +781,12 @@ func vaultErr(err error) *mcp.CallToolResult {
 	return mcp.NewToolResultError(fmt.Sprintf("open vault: %v", err))
 }
 
-
 func makeReadIssueHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v, vErr := vaultFromReq(req)
-			if vErr != nil {
-				return vaultErr(vErr), nil
-			}
+		if vErr != nil {
+			return vaultErr(vErr), nil
+		}
 		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
 
 		// Extract review number from issue ID (ISSUE-003-01 → 3)
@@ -816,9 +835,9 @@ func makeReadIssueHandler() server.ToolHandlerFunc {
 func makeAddRebuttalHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v, vErr := vaultFromReq(req)
-			if vErr != nil {
-				return vaultErr(vErr), nil
-			}
+		if vErr != nil {
+			return vaultErr(vErr), nil
+		}
 		issueID := normalizeIssueID(req.GetArguments()["issue_id"].(string))
 		rebuttal, _ := req.RequireString("rebuttal")
 
@@ -884,9 +903,9 @@ func makeAddRebuttalHandler() server.ToolHandlerFunc {
 func makeSaveReviewHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v, vErr := vaultFromReq(req)
-			if vErr != nil {
-				return vaultErr(vErr), nil
-			}
+		if vErr != nil {
+			return vaultErr(vErr), nil
+		}
 		prefix, _ := req.RequireString("prefix")
 		content, _ := req.RequireString("content")
 
@@ -902,9 +921,9 @@ func makeSaveReviewHandler() server.ToolHandlerFunc {
 func makeUpdateMemoryHandler() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		v, vErr := vaultFromReq(req)
-			if vErr != nil {
-				return vaultErr(vErr), nil
-			}
+		if vErr != nil {
+			return vaultErr(vErr), nil
+		}
 		role, _ := req.RequireString("role")
 		content, _ := req.RequireString("content")
 

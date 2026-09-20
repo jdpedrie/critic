@@ -92,6 +92,14 @@ For Codex: `invoke-codex(system_prompt: <system for immersive>, user_prompt: <us
 
 For Pi: `invoke-pi(system_prompt: <system for adversarial>, user_prompt: <user_prompt>)`. Capture the session_id.
 
+**Collecting results.** `invoke-codex` and `invoke-pi` return either
+`{status:"done", response, session_id}` or, when the model takes longer than
+the call's `wait_seconds` budget, `{status:"running", job_id}`. A running
+status is not an error. Poll it with `invoke-status(job_id: <id>,
+wait_seconds: 60)` until it reports `done`. Start every reviewer before you
+collect any of them, so they run concurrently.
+
+
 Hold the responses as `analytical_review`, `immersive_review`, `structural_review`, `adversarial_review` (plus session IDs for the external two).
 
 ### 6. Cross-review (pairwise rebuttals)

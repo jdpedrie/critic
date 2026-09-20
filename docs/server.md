@@ -7,7 +7,9 @@ The Go MCP server lives in `critic/server/`. It's small. Its job is to expose to
 ```
 server/
   main.go              entry point, MCP tool registrations
-  invoke.go            invoke-claude / invoke-codex / invoke-pi / pi-list-models / get-prompt handlers
+  invoke.go            invoke-claude / invoke-codex / invoke-pi / invoke-status / pi-list-models / get-prompt handlers
+  jobs.go              background invocations: job registry, wait budgets, progress heartbeat
+  jobs_test.go         job lifecycle, cancellation survival, heartbeat, disk mirroring, pruning
   config.go            config.yaml loader
   settings.go          persistent settings (read-settings / write-setting)
   agent/
@@ -139,9 +141,10 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 
 | Tool | Purpose |
 |------|---------|
-| `invoke-codex` | One-shot or resumed Codex call. Returns `{response, session_id}`. Optional `include_manuscript_from` appends the manuscript server-side. |
+| `invoke-codex` | One-shot or resumed Codex call. Returns `{response, session_id}` when it finishes inside `wait_seconds`, otherwise `{status:"running", job_id}`. Optional `include_manuscript_from` appends the manuscript server-side. |
 | `invoke-pi` | Same shape for Pi. Optional `provider`/`model` overrides on new sessions only (resumed sessions stay pinned). |
 | `invoke-claude` | Same shape for headless Claude (`claude -p`). Real server-side session resume. Exists for harness-agnostic use: a non-Claude leader (Codex CLI, etc.) dispatches Claude as a reviewer through this tool. Inside cowork, skills use Task subagents instead. |
+| `invoke-status(job_id?, wait_seconds?)` | Collect an invocation by id, blocking up to `wait_seconds` for it to finish. With no `job_id`, lists every job the server holds. |
 | `pi-list-models` | Wraps `pi --list-models`. |
 | `get-prompt(name, vault?, vars?)` | Resolve and render a prompt template. |
 
@@ -152,6 +155,38 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 | `read-settings` | Current settings JSON. |
 | `write-setting(key, value)` | Update one setting. |
 | `update-memory` | Legacy reviewer-memory hook. Not currently used by any skill. |
+
+## Long invocations
+
+A full-manuscript review runs for minutes. An MCP tool call cannot stay open
+that long. Clients cap tool calls, and the cap is shorter than the work, which
+is why manuscript reviews used to come back as timeouts while trivial probes
+through the same tools returned instantly. The failure had nothing to do with
+Codex, or with the size of the manuscript: a 189 KB manuscript with a one-line
+question answers in about six seconds. What takes minutes is generating the
+review itself.
+
+`jobs.go` decouples the two. Every `invoke-*` call starts a Job on the server's
+root context, not the request's, so the work outlives the tool call that asked
+for it. The call then waits out a budget (`wait_seconds`, default 60, max 300)
+and answers with whatever is true at that moment: the finished result in the
+original `{response, session_id}` shape, or `{status:"running", job_id}`. The
+caller collects the rest with `invoke-status`, which long-polls, so a review
+costs about one tool call per minute of model time rather than a busy-wait.
+
+Two things make this recoverable rather than merely asynchronous. Finished
+output is mirrored to `~/Library/Caches/critic/jobs/<job-id>.txt`, so a review
+survives the session that ordered it. And `invoke-status` with no `job_id`
+lists every job still held (six hours after completion), which is the way back
+in when a session loses track of an invocation.
+
+While a call is waiting it emits `notifications/progress` every ten seconds,
+against the client's own progress token. This is a liveness signal, not a
+timeout extension: clients that enforce an idle timeout reset it on each
+notification, but a client with a hard wall-clock cap will still cut the call
+off at the cap. That is exactly why the budget exists and defaults well under
+any plausible cap. The heartbeat is skipped when the client supplies no
+progress token, which the MCP spec requires.
 
 ## Agent wrappers
 

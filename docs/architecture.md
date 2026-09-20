@@ -41,6 +41,19 @@ Orchestration stays in markdown regardless of leader. It was moved out of Go del
 
 Inside cowork, Task subagents remain the default for Claude work; `invoke-claude` is for non-Claude leaders.
 
+## Invocations outlive tool calls
+
+External reviewers are reached through MCP tool calls, and a tool call is a
+short-lived thing. A manuscript review is not. Rather than fight that, every
+`invoke-*` call starts a background job rooted at the server's context and
+returns a handle once its wait budget is up; the leader collects the result
+with `invoke-status`. Short calls still answer inline, so a quick consult is
+unchanged. See [server.md](server.md) for the mechanics.
+
+The practical consequence for skills: start every reviewer, then collect them.
+Polling one to completion before starting the next serialises work that is
+meant to overlap.
+
 ## Session continuity for cross-review
 
 The cross-review matrix has each reviewer rebut the others. That's only useful if each reviewer remembers what they said.

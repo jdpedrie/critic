@@ -7,7 +7,7 @@ description: Multi-reviewer manuscript review. Interactive setup (which reviewer
 
 The vault path is the user's configured vault. Call `read-settings` first to get `vault_path`. If it isn't set, ask the user for it before doing anything else.
 
-This skill orchestrates the workflow. All Claude work is done by `Task` subagents (you spawn them). External models (Codex, Pi) are reached via `invoke-codex` / `invoke-pi`. Prompts are loaded via `get-prompt`.
+This skill orchestrates the workflow. All Claude work is done by `Task` subagents (you spawn them). External models (Codex, Pi) are reached via `invoke-codex` / `invoke-pi`, and their results are collected with `invoke-status` (see *Collecting long invocations* below). Prompts are loaded via `get-prompt`.
 
 ## $ARGUMENTS: Author's note
 
@@ -79,6 +79,30 @@ independent reviews (B6) and to cross-review rebuttals (B7) alike.
 Non-reviewer errors (a missing optional file, an empty diff) are not
 failures. Handle those as the steps describe.
 
+### Collecting long invocations
+
+`invoke-codex` / `invoke-pi` / `invoke-claude` do not block until the model is
+finished. A short call answers inline with `{status:"done", response,
+session_id}`. A long one answers with `{status:"running", job_id}` as soon as
+its `wait_seconds` budget is up. Every full-manuscript review takes that second
+path. It is not an error and not a timeout: the work is still running on the
+server.
+
+Collect it by calling `invoke-status(job_id: <id>, wait_seconds: 60)` until
+`status` is no longer `running`. Each call blocks until the job finishes or the
+budget expires, so the loop costs roughly one tool call per minute of model
+time rather than a busy-wait. A finished job returns the same `{response,
+session_id}` an inline call would have.
+
+**Start every reviewer before collecting any of them.** Fire all the invoke-*
+calls in one turn, keep the `job_id`s, then poll. Running Codex to completion
+before starting Pi serialises work that is supposed to overlap and doubles the
+wall time of B6.
+
+Results are also written to disk at the `output_file` path in each result. If a
+run dies part-way, finished reviews survive there, and `invoke-status` with no
+`job_id` lists every job the server still holds.
+
 ### B1. Load prior review summary (if step enabled)
 
 Find the most recent `review/NNN-manuscript-critic-*.md` file. Use the parent's built-in `Glob` and `Read` tools. Cut at the sentinel `<!-- RAW AGENT OUTPUTS BELOW. NOT INCLUDED IN FUTURE REVIEW CONTEXT -->`; keep only the synthesis portion above it.
@@ -139,7 +163,7 @@ For Claude subagents, fetch the manuscript yourself via `assemble-manuscript(vau
 
 ### B6. Independent reviews (parallel)
 
-Spawn all enabled reviewers in a single turn (parallel tool calls).
+Spawn all enabled reviewers in a single turn (parallel tool calls). The external ones return job handles; collect them only after all of them have been started.
 
 **Claude (subagent. Review + rejection pass in one shot, if rejection is enabled):**
 
@@ -168,7 +192,7 @@ invoke-codex(
 )
 ```
 
-Returns `{response, session_id}`. Store both as `codex_review` and `codex_session_id`.
+Returns a `job_id` (or an inline result, if it finishes fast). Collect it per *Collecting long invocations*, then store the response and session ID as `codex_review` and `codex_session_id`.
 
 **Pi (constructive):**
 
@@ -182,7 +206,7 @@ invoke-pi(
 )
 ```
 
-Returns `{response, session_id}`. Store both as `pi_review` and `pi_session_id`.
+Returns a `job_id` (or an inline result). Collect it the same way and store as `pi_review` and `pi_session_id`.
 
 **Pi (adversarial). Only if adversarial step is on:**
 
@@ -198,13 +222,15 @@ invoke-pi(
 )
 ```
 
-This is a fresh Pi session (different system prompt) with its own session_id. Store as `adv_review` and `adv_session_id`.
+This is a fresh Pi session (different system prompt) with its own session_id. Collect it the same way and store as `adv_review` and `adv_session_id`.
+
+A `{status:"running"}` result is not an error. Keep polling it. Only a genuine error result counts as a failure.
 
 If any reviewer errors, STOP the run per the Phase B exception: show the user the exact error and ask whether to retry, continue without that reviewer, or abort. Only proceed once the user has decided.
 
 ### B7. Cross-review (if step enabled)
 
-Full matrix. Each participating reviewer rebuts the others. Spawn in parallel.
+Full matrix. Each participating reviewer rebuts the others. Spawn in parallel, then collect. Rebuttals are shorter than reviews but still routinely outrun a single tool call, so treat every external rebuttal the same way as B6: start them all, keep the `job_id`s, then poll with `invoke-status`. See *Collecting long invocations*.
 
 For each reviewer, the user prompt for cross-review is the concatenation of all OTHER reviewers' reviews, labeled by source (`## Claude's Review`, `## Codex's Review`, `## Pi's Review`, `## Pi (Adversarial)'s Review`), separated by `---`.
 

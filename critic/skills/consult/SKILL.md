@@ -32,6 +32,12 @@ invoke-codex(system_prompt, user_prompt)
 invoke-pi(system_prompt, user_prompt)
 ```
 
+**Collecting results.** Each call returns either `{status:"done", response,
+session_id}` or, when the model takes longer than the call's `wait_seconds`
+budget, `{status:"running", job_id}`. A running status is not an error. Poll it
+with `invoke-status(job_id: <id>, wait_seconds: 60)` until it reports `done`.
+Start both before collecting either, so they run concurrently.
+
 If only one is enabled, run only that one. If both fail, report and stop.
 
 ### 3. Present
