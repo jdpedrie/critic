@@ -72,13 +72,13 @@ The critic strips wikilinks in scene bodies the same way storyline's export does
 
 The critic doesn't enforce a schema on Codex entries. Whatever frontmatter and body the author chooses, the reviewer sees verbatim.
 
-Two read patterns. Full inlining is used by `/critic:manuscript`, which passes all Codex entries to the reviewers as context. Token cost is real but it's the whole-book pass; everyone might be relevant. Filtered inlining is used by `/critic:review` and `/critic:close-read`, which filter to the entities referenced in the slice's scene frontmatter. Reviewing scene `01-01 Customs at Fontenoy` pulls only the four characters and one location named in its frontmatter.
+The Codex is inlined for slice-scoped work only. `/critic:review` and `/critic:close-read` filter to the entities referenced in the slice's scene frontmatter: reviewing scene `01-01 Customs at Fontenoy` pulls only the four characters and one location named in its frontmatter. `/critic:extract` reads the full Codex because it reasons about contradictions across entities. `/critic:manuscript` inlines no Codex at all; manuscript reviewers read as readers, without insider reference material.
 
-A third pattern exists for Claude subagents: `read-codex-entry(name)` for on-demand lookups. Codex CLI and Pi don't get this tool. They get whatever the orchestrator decides to inline.
+A further pattern exists for Claude subagents: `read-codex-entry(name)` for on-demand lookups. Codex CLI and Pi don't get this tool. They get whatever the orchestrator decides to inline.
 
 ## Research
 
-`Research/*.md` is free-form worldbuilding. The critic concatenates every `.md` file under `Research/` (recursive) and inlines it for every reviewer that gets context, manuscript and slice reviews alike. It's the worldbuilding bible.
+`Research/*.md` is free-form worldbuilding. The critic concatenates every `.md` file under `Research/` (recursive) and inlines it for slice reviews (`/critic:review`), close-reads (canon category), and extraction. `/critic:manuscript` excludes it: the whole-book reviewers judge what's on the page, and the worldbuilding bible both bloats their context and lets them paper over gaps a reader would hit.
 
 The critic doesn't try to parse Research files structurally. They're prose. If the author writes `worldbuilding.md` with sections for politics, technology, and history, the reviewer sees it as one chunk and uses it as context.
 

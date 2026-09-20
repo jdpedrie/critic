@@ -9,13 +9,13 @@ import (
 )
 
 type Config struct {
-	VaultPath string      `yaml:"-"`
-	Codex     CodexConfig `yaml:"codex"`
-	Pi        PiConfig    `yaml:"pi"`
+	VaultPath string       `yaml:"-"`
+	Codex     CodexConfig  `yaml:"codex"`
+	Pi        PiConfig     `yaml:"pi"`
+	Claude    ClaudeConfig `yaml:"claude"`
 
 	// Legacy fields kept for backward compatibility with older config.yaml
 	// files. They are not consulted by any agent or tool.
-	Claude      LegacyConfig `yaml:"claude,omitempty"`
 	Gemini      LegacyConfig `yaml:"gemini,omitempty"`
 	Adversarial LegacyConfig `yaml:"adversarial,omitempty"`
 }
@@ -29,6 +29,15 @@ type PiConfig struct {
 	Provider string `yaml:"provider"` // anthropic | openai | google
 	Model    string `yaml:"model"`
 	Enabled  bool
+}
+
+// ClaudeConfig drives the invoke-claude tool (headless `claude -p`). This is
+// for harness-agnostic use, where a non-Claude leader (e.g. Codex CLI)
+// orchestrates and needs Claude as an invocable reviewer. Inside cowork,
+// skills keep using Task subagents; both paths coexist.
+type ClaudeConfig struct {
+	Model   string `yaml:"model"` // empty = CLI default
+	Enabled bool
 }
 
 // LegacyConfig is a permissive shape that swallows old config sections
@@ -67,6 +76,9 @@ func LoadConfig(path string) (*Config, error) {
 	if v := settingOrEnv(ps, "pi_model"); v != "" {
 		cfg.Pi.Model = v
 	}
+	if v := settingOrEnv(ps, "claude_model"); v != "" {
+		cfg.Claude.Model = v
+	}
 
 	// Vault path
 	if v := settingOrEnv(ps, "vault_path"); v != "" {
@@ -76,6 +88,7 @@ func LoadConfig(path string) (*Config, error) {
 	// Enable/disable — default to true unless explicitly "false".
 	cfg.Codex.Enabled = settingOrEnvBool(ps, "codex_enabled", true)
 	cfg.Pi.Enabled = settingOrEnvBool(ps, "pi_enabled", true)
+	cfg.Claude.Enabled = settingOrEnvBool(ps, "claude_enabled", true)
 
 	return cfg, nil
 }

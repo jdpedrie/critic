@@ -7,10 +7,11 @@ The Go MCP server lives in `critic/server/`. It's small. Its job is to expose to
 ```
 server/
   main.go              entry point, MCP tool registrations
-  invoke.go            invoke-codex / invoke-pi / pi-list-models / get-prompt handlers
+  invoke.go            invoke-claude / invoke-codex / invoke-pi / pi-list-models / get-prompt handlers
   config.go            config.yaml loader
   settings.go          persistent settings (read-settings / write-setting)
   agent/
+    claude.go          Claude CLI wrapper (headless claude -p, real session resume)
     codex.go           Codex CLI wrapper (uses fanwenlin/codex-go-sdk)
     pi.go              Pi CLI wrapper (shells out, replays history)
   prompts/
@@ -140,6 +141,7 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 |------|---------|
 | `invoke-codex` | One-shot or resumed Codex call. Returns `{response, session_id}`. Optional `include_manuscript_from` appends the manuscript server-side. |
 | `invoke-pi` | Same shape for Pi. Optional `provider`/`model` overrides on new sessions only (resumed sessions stay pinned). |
+| `invoke-claude` | Same shape for headless Claude (`claude -p`). Real server-side session resume. Exists for harness-agnostic use: a non-Claude leader (Codex CLI, etc.) dispatches Claude as a reviewer through this tool. Inside cowork, skills use Task subagents instead. |
 | `pi-list-models` | Wraps `pi --list-models`. |
 | `get-prompt(name, vault?, vars?)` | Resolve and render a prompt template. |
 
@@ -157,7 +159,9 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 
 `agent/pi.go` wraps the Pi CLI via `os/exec`. The wrapper shells out to `pi -p <prompt> --no-session --no-tools` plus optional `--provider` and `--model`. It builds the prompt by flattening a turn sequence (system, user, assistant) into one string with structured headers, because `pi -p` is one-shot and stateless. It maintains sessions in-memory: a sync-protected map of `pi-N` to turn list. `StartSession` returns `pi-N` and stashes turns. `Resume(pi-N, prompt)` appends and re-flattens. Provider and model are pinned at session creation. Resumes use the original.
 
-The asymmetry is real. Codex has actual server-side sessions. Pi sessions are an emulation that costs a full message-history re-send each turn. For cross-review (one extra turn per reviewer) this is fine.
+`agent/claude.go` wraps the Claude Code CLI in headless print mode. `RunSession` runs `claude -p --output-format json --system-prompt <sys> --tools "" --disable-slash-commands`, passing the user prompt via stdin (manuscripts exceed comfortable argv sizes) and parsing the JSON result for `result` and `session_id`. `Resume` runs `claude -p -r <session-id>`; the system prompt and history persist server-side in the session. The wrapper sets a neutral working directory so CLAUDE.md project auto-discovery doesn't pull unrelated context into the reviewer, and scrubs the `CLAUDECODE` nesting markers from the child environment.
+
+The session asymmetry across the three wrappers: Codex and Claude have real server-side sessions; Pi sessions are an emulation that costs a full message-history re-send each turn. For cross-review (one extra turn per reviewer) all three are fine.
 
 ## Prompt system
 
@@ -206,7 +210,7 @@ This is the only test currently in the codebase. New test cases should live next
 
 The server doesn't know what a review is structurally. It exposes `stage-review-part` and `assemble-review`. What parts there are and in what order they go is the skill's job.
 
-The server doesn't dispatch reviewers. The skills do. The server just provides the surface (`invoke-codex`, `invoke-pi`, and `Task` is a built-in tool).
+The server doesn't dispatch reviewers. The skills do. The server just provides the surface (`invoke-codex`, `invoke-pi`, `invoke-claude`, and `Task` is a built-in tool). This is deliberate and settled: orchestration was moved out of Go into skills early on, and it stays there. The invoke tools make every reviewer reachable from any MCP-speaking leader; the playbook that sequences them is always markdown interpreted by the leader.
 
 The server doesn't read prompts on disk. It embeds them. The resolution chain lets authors override, but the source of truth ships in the binary.
 

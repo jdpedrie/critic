@@ -66,9 +66,18 @@ Accept "all", "default", or specific opt-outs ("skip cross-review", "no adversar
 
 After A4, restate the chosen configuration in one short paragraph and run.
 
-## Phase B: Execution (non-interactive)
+## Phase B: Execution (non-interactive, except on reviewer failure)
 
-Do not stop for user input from here on. If anything errors, report it and continue with what's possible.
+Do not stop for user input from here on, with one exception: **if any enabled
+reviewer invocation fails** (Codex or Pi returns an error, a Claude subagent
+errors out), STOP immediately. Do not continue with the remaining steps, do
+not synthesize around the gap. Present the exact error to the user and ask
+how to proceed. Typical options to offer: retry the failed invocation,
+continue without that reviewer, or abort the run. This applies to the
+independent reviews (B6) and to cross-review rebuttals (B7) alike.
+
+Non-reviewer errors (a missing optional file, an empty diff) are not
+failures. Handle those as the steps describe.
 
 ### B1. Load prior review summary (if step enabled)
 
@@ -108,15 +117,17 @@ Hold this as `manuscript_system_prompt`.
 ### B5. Build user prompt prefix
 
 Construct (in this order, only the sections that apply). The stage block goes
-first because it calibrates everything else; the worldbuilding context follows
-so reviewers have it in hand before they see prior-review or diff context; the
-author's note (if present) sits next to the changes-since-last-review block
-since the two are paired.
+first because it calibrates everything else; the author's note (if present)
+sits next to the changes-since-last-review block since the two are paired.
+
+Deliberately excluded: Research worldbuilding and Codex entries. Manuscript
+reviewers judge what's on the page as a reader would. Inlining the
+worldbuilding bible bloats context and invites reviewers to fill gaps with
+insider knowledge instead of flagging them. Canon-consistency work belongs
+to `/critic:extract` and `/critic:close-read`.
 
 - **Current draft stage**: call `read-stage(vault: <vault>)`, prefix with `=== CURRENT DRAFT STAGE ===`. If the author has written `<vault>/stage.md` it's used verbatim; otherwise the server synthesizes a stage description from the storyline project frontmatter (acts/chapters/labels) and scene metadata. This tells reviewers what fraction of the book they're seeing. CRITICAL: include this block first. Reviewers must calibrate their entire assessment against it.
 - **Style guide**: call `read-style-guide(vault: <vault>)`, prefix with `=== STYLE GUIDE ===`. Skip if empty. The tool checks `<vault>/style.md` first, then falls back to `<vault>/Research/style.md`.
-- **Worldbuilding (Research)**: call `read-research(vault: <vault>)`, prefix with `=== WORLDBUILDING (RESEARCH) ===`. Concatenated contents of `<vault>/Research/`. Skip if empty.
-- **Codex (Characters & Locations)**: call `read-codex(vault: <vault>)` (no `names` filter. Manuscript-level review wants every entity), prefix with `=== CODEX (CHARACTERS & LOCATIONS) ===`. Per-entity reference files. Skip if empty.
 - **Known issues**: call `read-issues(vault: <vault>)`, prefix with `=== KNOWN ISSUES ===`. Skip if empty.
 - **Prior review summary** (if loaded in B1): prefix with `=== PRIOR REVIEW SUMMARY ===`
 - **Diff summary** (if generated in B3): prefix with `=== CHANGES SINCE LAST REVIEW ===` and tell the reader: "This summarizes what the author actually changed since the previous review. Use it to assess whether prior issues were addressed and what the changes introduced. The full diff is on disk at `<diff_full_path>` if you need it (but reviewers don't have a way to fetch it; only the orchestrator and the user can read it)."
@@ -189,7 +200,7 @@ invoke-pi(
 
 This is a fresh Pi session (different system prompt) with its own session_id. Store as `adv_review` and `adv_session_id`.
 
-If a reviewer errors, note it and continue. Require at least one reviewer to succeed.
+If any reviewer errors, STOP the run per the Phase B exception: show the user the exact error and ask whether to retry, continue without that reviewer, or abort. Only proceed once the user has decided.
 
 ### B7. Cross-review (if step enabled)
 
@@ -296,10 +307,10 @@ Tell the user the saved file path and review number. Then present the synthesis 
 
 ## Notes
 
-- Run Phase B straight through. Do not stop between steps.
+- Run Phase B straight through. Do not stop between steps, except on reviewer failure (see the Phase B header).
 - The source of truth is the storyline project at `<vault>`. Get the manuscript via `assemble-manuscript`; do not read `Scenes/` files individually or fall back to `summary/` (out of date) or `review/` (those are reviews, not source).
 - For step toggles, default to "on" if the user said "all" or didn't specify.
-- All reviewers see the same user-prompt prefix (stage + style + research + codex + known issues + prior review summary + diff + author note). The manuscript text is appended by the MCP server for invoke-* calls (via `include_manuscript_from`); you inline it explicitly for Claude subagents via `assemble-manuscript`.
+- All reviewers see the same user-prompt prefix (stage + style + known issues + prior review summary + diff + author note). No Research or Codex blocks; manuscript reviewers read as readers, not as editors with insider knowledge. The manuscript text is appended by the MCP server for invoke-* calls (via `include_manuscript_from`); you inline it explicitly for Claude subagents via `assemble-manuscript`.
 - Issue IDs use the review number from B2 padded to 3 digits.
 - The cross-review matrix includes the adversary as a peer. Each reviewer (Claude / Codex / Pi-constructive / Pi-adversary) rebuts every OTHER reviewer's review. The adversary keeps its harsh stance via session continuity (its prior adversarial review is in its session context).
-- You. The parent Claude. Are the supervisor. Phase A is your only chance to ask the user questions; everything else runs to completion.
+- You, the parent Claude, are the supervisor. Phase A is your only chance to ask setup questions; everything else runs to completion unless a reviewer fails.

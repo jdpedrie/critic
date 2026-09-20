@@ -32,7 +32,7 @@ In rough priority order:
 
 3. Calibrated to the actual draft stage. Reviewers default to assuming they're reading a finished book. That produces useless verdicts like "the arc doesn't resolve" when the author has only drafted Act 1. The critic injects an explicit stage block, either hand-written (`stage.md`) or auto-derived from project frontmatter, so reviewers know what they're seeing.
 
-4. Scoped context per task. The full-manuscript review inlines everything. A chapter review inlines only the Codex entries for entities in that chapter. A close-read on a scene inlines only that scene's frontmatter entities plus the style guide. Reviewers don't get to wander.
+4. Scoped context per task. The full-manuscript review gets the manuscript, the stage block, the style guide, and past-review context, and nothing else: manuscript reviewers read as readers, without the worldbuilding bible. A chapter review inlines only the Codex entries for entities in that chapter. A close-read on a scene inlines only that scene's frontmatter entities plus the style guide. Reviewers don't get to wander.
 
 5. Independent reviewers, then forced engagement. The three primary reviewers run in parallel with no knowledge of each other. Then the cross-review matrix forces each one to rebut the others. This surfaces real disagreements (which the synthesis flags) and stops one reviewer's framing from dominating.
 

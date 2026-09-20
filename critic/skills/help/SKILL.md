@@ -49,8 +49,10 @@ All available settings:
 | `pi_enabled` | Enable/disable Pi |
 | `pi_provider` | Default Pi provider: anthropic, openai, google |
 | `pi_model` | Default Pi model (skills may override per-call) |
+| `claude_enabled` | Enable/disable the `invoke-claude` tool |
+| `claude_model` | Model for `invoke-claude` (empty = CLI default) |
 
-Claude is always available (it runs as a subagent within this cowork session). There's nothing to configure for Claude. Its model is whatever cowork is running on.
+Inside cowork, Claude is always available as a Task subagent regardless of these settings; its model there is whatever cowork is running on. The `claude_*` settings affect only the `invoke-claude` MCP tool, which lets a non-Claude leader (e.g. Codex CLI with this MCP server registered) dispatch Claude as a reviewer.
 
 Settings can also be set in `config.yaml` in the plugin directory. Settings from `/critic:settings` override `config.yaml`.
 

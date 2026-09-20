@@ -33,6 +33,14 @@ Pi is the [Pi harness](https://pi.dev), a unified CLI that fronts multiple model
 
 The asymmetry is intentional. Claude lives inside the cowork session because spawning a Task subagent there is cheap and gives true context continuity for the review-plus-rejection pattern. Codex and Pi need wrapping because the cowork session can't run external CLIs directly.
 
+## Harness-agnostic mode
+
+The server also exposes `invoke-claude`, wrapping headless `claude -p` with real session resume. With it, all three reviewers are symmetric MCP tools, and the leader doesn't have to be Claude: register the critic server with any MCP-speaking harness (Codex CLI via `[mcp_servers]` in `~/.codex/config.toml`, for example) and that harness can run the playbook, dispatching Claude, Codex, and Pi uniformly through `invoke-*` calls.
+
+Orchestration stays in markdown regardless of leader. It was moved out of Go deliberately: review workflows need runtime judgment (summarising diffs, deciding what to surface, conversing with the author), and a markdown playbook interpreted by an LLM leader keeps that judgment where it belongs. The server never sequences a review.
+
+Inside cowork, Task subagents remain the default for Claude work; `invoke-claude` is for non-Claude leaders.
+
 ## Session continuity for cross-review
 
 The cross-review matrix has each reviewer rebut the others. That's only useful if each reviewer remembers what they said.
@@ -47,7 +55,7 @@ Claude subagents are stateless too. Each Task subagent is a fresh context. The o
 
 A skill is a markdown file in `skills/<name>/SKILL.md` that Claude reads when the user types `/critic:<name>`. The frontmatter tells Claude when to use it; the body tells Claude what to do.
 
-Skills compose prompts (via `get-prompt` MCP tool), inline data (via the various `read-*` and `assemble-*` tools), and dispatch work to subagents (via the `Task` tool) or external reviewers (via `invoke-codex` / `invoke-pi`).
+Skills compose prompts (via `get-prompt` MCP tool), inline data (via the various `read-*` and `assemble-*` tools), and dispatch work to subagents (via the `Task` tool) or external reviewers (via `invoke-claude` / `invoke-codex` / `invoke-pi`).
 
 The split between "skill" and "server tool" follows a rule. Anything that needs to read context and decide what to do next is a skill. Anything that's a pure operation on the filesystem or a wrapped external process is a server tool.
 

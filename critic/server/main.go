@@ -75,6 +75,14 @@ func main() {
 		piAgent = agent.NewPi(cfg.Pi.Provider, cfg.Pi.Model)
 	}
 
+	// Claude as an invocable harness (headless `claude -p`). Inside cowork,
+	// skills use Task subagents instead; this tool exists so a non-Claude
+	// leader (Codex CLI, etc.) can dispatch Claude as a reviewer.
+	var claudeAgent *agent.Claude
+	if cfg.Claude.Enabled {
+		claudeAgent = agent.NewClaude(cfg.Claude.Model)
+	}
+
 	s := server.NewMCPServer(
 		"critic",
 		"0.1.0",
@@ -96,6 +104,20 @@ func main() {
 				mcp.WithString("include_manuscript_from", mcp.Description("Vault path. If set, the server appends '=== MANUSCRIPT ===' followed by all chapters in order to the user prompt.")),
 			),
 			makeInvokeCodexHandler(codexAgent),
+		)
+	}
+
+	// invoke-claude
+	if claudeAgent != nil {
+		s.AddTool(
+			mcp.NewTool("invoke-claude",
+				mcp.WithDescription("Invoke Claude (headless `claude -p`) with a system + user prompt. Returns {response, session_id}. Pass session_id to resume a prior conversation (real server-side session resume). Set include_manuscript_from to append manuscript text server-side. Intended for non-Claude leaders (e.g. Codex CLI orchestrating a review); inside a Claude Code session, prefer Task subagents."),
+				mcp.WithString("system_prompt", mcp.Required(), mcp.Description("System prompt (role, framing, instructions). Replaces the CLI's default system prompt.")),
+				mcp.WithString("user_prompt", mcp.Required(), mcp.Description("User prompt (the actual question or task)")),
+				mcp.WithString("session_id", mcp.Description("Session ID from a previous invoke-claude call to resume")),
+				mcp.WithString("include_manuscript_from", mcp.Description("Vault path. If set, server appends '=== MANUSCRIPT ===' plus the assembled manuscript to the user prompt.")),
+			),
+			makeInvokeClaudeHandler(claudeAgent),
 		)
 	}
 

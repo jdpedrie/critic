@@ -27,9 +27,11 @@ Third, adversary provider/model, only if the adversarial step is on. The adversa
 
 Fourth, which steps? Prior-review summary load, rejection pass after Claude, adversarial pass, cross-review, synthesis, save. Default: all on.
 
-### Phase B: execution (non-interactive)
+### Phase B: execution (non-interactive, except on reviewer failure)
 
-The skill runs straight through. The steps:
+The skill runs straight through, with one exception: if any enabled reviewer invocation fails (Codex or Pi errors, a Claude subagent errors out), the run stops immediately and asks the author how to proceed (retry, continue without that reviewer, or abort). No synthesizing around a gap.
+
+The steps:
 
 B1. Load the prior review's synthesis (above the sentinel), if step enabled.
 
@@ -39,7 +41,7 @@ B3. `snapshot-and-diff` writes a fresh manuscript snapshot (assembled in plugin 
 
 B4. Compose the manuscript-review system prompt: `agent-framing.md` + `manuscript.md` + `verdict.md`.
 
-B5. Build the user prompt prefix: stage, style, research, codex, known-issues, prior-review-summary, diff-summary, author-note. Each section is gated on existence.
+B5. Build the user prompt prefix: stage, style, known-issues, prior-review-summary, diff-summary, author-note. Each section is gated on existence. Research and Codex are deliberately excluded: manuscript reviewers read as readers, and inlining the worldbuilding bible invites them to fill gaps with insider knowledge instead of flagging them. Canon work belongs to `/critic:extract` and `/critic:close-read`.
 
 B6. Independent reviews in parallel. Claude subagent does review plus rejection pass in one shot (true context continuity). Codex and Pi are invoked with `include_manuscript_from` so the server appends the manuscript text. Pi adversary runs in the same parallel turn with the adversarial system prompt.
 
@@ -360,8 +362,10 @@ View and update plugin settings.
 | `pi_enabled` | Enable the Pi reviewer (true/false). |
 | `pi_provider` | Default Pi provider: `anthropic`, `openai`, `google`. |
 | `pi_model` | Default Pi model. Skills can override per-call. |
+| `claude_enabled` | Enable the `invoke-claude` tool (true/false). |
+| `claude_model` | Model for `invoke-claude`. Empty = CLI default. |
 
-Claude is always available (Task subagent inside cowork). No Claude settings.
+Inside cowork, Claude is always available as a Task subagent regardless of these settings. The `claude_*` settings affect only the `invoke-claude` MCP tool used by non-Claude leaders.
 
 ### Output
 

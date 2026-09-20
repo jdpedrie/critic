@@ -1,30 +1,18 @@
-models:
-  text_analytical: claude
-  text_immersive: codex
-  full_structural: claude
-  full_adversarial: codex
-  synthesizer: claude
-
-claude:
-  model: claude-sonnet-4-6
+# critic server defaults. Settings set via /critic:settings override these.
 
 codex:
-  model: gpt-5.3-codex
+  # model left empty = let the Codex CLI pick the active subscription's model
+  model: ""
 
-gemini:
-  model: gemini-2.5-flash
+pi:
+  # pi handles the third reviewer slot. Provider/model are defaults; skills
+  # may override per-call (e.g. the manuscript skill asks the user to pick).
+  provider: google
+  model: ""
 
-adversarial:
-  base_url: https://api.x.ai/v1
-  model: grok-4.20-0309-reasoning
-  api_key: 
-
-review:
-  max_issues: 7
-  max_new_issues_round2: 3
-  prior_chapters: 2
-  canon_retrieval: keyword
-
-memory:
-  compress_threshold: 2000
-  max_open_issues: 20
+claude:
+  # Used only by the invoke-claude tool (headless `claude -p`), which exists
+  # so a non-Claude leader (Codex CLI, etc.) can dispatch Claude as a
+  # reviewer. Inside cowork, skills use Task subagents and this is ignored.
+  # Empty = CLI default model.
+  model: ""

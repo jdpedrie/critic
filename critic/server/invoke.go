@@ -43,6 +43,35 @@ func optString(req mcp.CallToolRequest, key string) string {
 	return ""
 }
 
+func makeInvokeClaudeHandler(c *agent.Claude) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		systemPrompt, _ := req.RequireString("system_prompt")
+		userPrompt, _ := req.RequireString("user_prompt")
+		sessionID := optString(req, "session_id")
+		userPrompt = appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+
+		var response, newSession string
+		var err error
+
+		if sessionID != "" {
+			response, err = c.Resume(ctx, sessionID, userPrompt)
+			newSession = sessionID
+		} else {
+			response, newSession, err = c.RunSession(ctx, systemPrompt, userPrompt)
+		}
+
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("claude: %v", err)), nil
+		}
+
+		data, _ := json.Marshal(map[string]string{
+			"response":   response,
+			"session_id": newSession,
+		})
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
 func makeInvokeCodexHandler(c *agent.Codex) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		systemPrompt, _ := req.RequireString("system_prompt")

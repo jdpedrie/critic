@@ -31,8 +31,10 @@ To update a setting:
 | `pi_enabled` | Enable the Pi reviewer (true/false). Default true. | `true` |
 | `pi_provider` | Default Pi provider (`anthropic`, `openai`, `google`, etc.) | `google` |
 | `pi_model` | Default Pi model. Skills can override per-call. | `gemini-2.5-pro` |
+| `claude_enabled` | Enable the `invoke-claude` tool (true/false). Default true. | `true` |
+| `claude_model` | Model for `invoke-claude` (alias like `sonnet`/`opus` or full name). Empty = CLI default. | `sonnet` |
 
-Claude is always available. It runs as a Task subagent inside cowork. Its model is whatever cowork is running on. There's nothing to configure.
+Inside cowork, Claude is always available as a Task subagent regardless of these settings; its model there is whatever cowork is running on. The `claude_*` settings only affect the `invoke-claude` MCP tool, which exists so a non-Claude leader (e.g. the Codex CLI) can dispatch Claude as a reviewer.
 
 ## Instructions
 
