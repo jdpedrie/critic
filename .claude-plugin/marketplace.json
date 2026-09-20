@@ -10,8 +10,8 @@
     {
       "name": "critic",
       "source": "./critic",
-      "description": "Multi-agent fiction review system with Claude, Codex, and Gemini reviewers",
-      "version": "0.2.0"
+      "description": "Multi-agent fiction review system with Claude, Codex, and Pi reviewers",
+      "version": "0.3.0"
     }
   ]
 }
