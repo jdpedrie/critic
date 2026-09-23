@@ -1,6 +1,6 @@
 # Canon Extraction: Slice Mode
 
-You are extracting factual assertions from a slice of fiction (one scene or one chapter) and reconciling them against the project's Codex (per-entity files in `Codex/Characters/` and `Codex/Locations/`) and Research (worldbuilding bibles in `Research/`).
+You are extracting factual assertions from a slice of fiction (one scene or one chapter) and reconciling them against the project's Codex (per-entity files in `Background/Characters/` and `Background/Locations/`) and Research (the worldbuilding docs elsewhere in `Background/`).
 
 ## What you'll receive
 
@@ -52,7 +52,7 @@ Concrete row-by-row deltas to `.claude/codex-inventory.md`. For each entity touc
 
 - `<Entity name>`: <Add | Update | No change>
   - Status: <new value or unchanged>
-  - Last touched: Act <A>, Ch <C>, Seq <S> (<scene title>)
+  - Last touched: <CC-SS> (<scene title>)
   - Pending facts to fold in: <list, or none>
   - Notes: <any flags. E.g., contradicts existing, first appearance, candidate for intentionally-absent>
 
@@ -60,7 +60,7 @@ Concrete row-by-row deltas to `.claude/codex-inventory.md`. For each entity touc
 
 For each entity with new facts or contradictions, draft the specific change to its Codex file:
 
-- `<Codex/Characters/<Name>.md or Codex/Locations/<Name>.md>`
+- `<Background/Characters/<Name>.md or Background/Locations/<Name>.md>`
   - **If creating**: draft the frontmatter and body. Match the format of existing Codex entries (use one as template).
   - **If updating**: show the specific lines to add/change. Quote what currently exists and what should replace it.
 

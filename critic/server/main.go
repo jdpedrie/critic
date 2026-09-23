@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -15,10 +14,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
-
-// filepathBase is a tiny alias to keep call sites tidy. We import path/filepath
-// for a single helper; this lets readers see intent at the callsite.
-func filepathBase(p string) string { return filepath.Base(p) }
 
 // concatNamedFiles joins a map of file paths → content into a single markdown
 // block, with `### <path>` headers between files. Keys are sorted so output is
@@ -98,7 +93,7 @@ func main() {
 
 	// Common vault param for all tools that touch the filesystem.
 	vaultParam := mcp.WithString("vault", mcp.Required(),
-		mcp.Description("Absolute path to the Obsidian vault root"))
+		mcp.Description("Absolute path to the book project: the folder containing Story/, Background/, and Review/"))
 
 	// invoke-codex
 	if codexAgent != nil {
@@ -171,7 +166,7 @@ func main() {
 	s.AddTool(
 		mcp.NewTool("get-prompt",
 			mcp.WithDescription("Load a prompt template. Resolution: <vault>/prompts/<name> > $CLAUDE_PLUGIN_ROOT/prompts/<name> > embedded default. Optional vars are substituted using Go text/template (e.g. {{.Role}}, {{.MaxIssues}}, {{.ReviewNum}})."),
-			mcp.WithString("name", mcp.Required(), mcp.Description("Prompt filename (e.g. agent-framing.md, manuscript.md, verdict.md, rejection-pass.md)")),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Prompt filename. Publication frame: agent-framing.md, manuscript.md, adversarial.md, rejection-pass.md, synthesis.md, verdict.md. Craft frame: craft-framing.md, manuscript-craft.md, adversarial-craft.md, rejection-pass-craft.md, synthesis-craft.md, verdict-craft.md, delta.md, synthesis-delta.md.")),
 			mcp.WithString("vault", mcp.Description("Vault path. If set, vault/prompts/<name> is checked first.")),
 			mcp.WithString("vars", mcp.Description("JSON object of template variables (e.g. {\"Role\":\"analytical\",\"MaxIssues\":7}).")),
 		),
@@ -237,7 +232,7 @@ func main() {
 	// save-review (kept for backward compatibility and small reviews)
 	s.AddTool(
 		mcp.NewTool("save-review",
-			mcp.WithDescription("Save a review to the vault's review/ directory as a timestamped markdown file. For large reviews, prefer stage-review-part + assemble-review."),
+			mcp.WithDescription("Save a review to the vault's Review/ directory as a timestamped markdown file. For large reviews, prefer stage-review-part + assemble-review."),
 			vaultParam,
 			mcp.WithString("prefix", mcp.Required(), mcp.Description("Filename prefix (e.g. manuscript-critic, chapter-05-review)")),
 			mcp.WithString("content", mcp.Required(), mcp.Description("Full markdown content to write")),
@@ -248,7 +243,7 @@ func main() {
 	// read-stage
 	s.AddTool(
 		mcp.NewTool("read-stage",
-			mcp.WithDescription("Return the draft-stage block to inject as `=== CURRENT DRAFT STAGE ===` for reviewers. If <vault>/stage.md exists, returns its contents verbatim (author override). Otherwise synthesizes a stage description from the storyline project frontmatter (acts, chapters, labels) and scene metadata."),
+			mcp.WithDescription("Return the draft-stage block to inject as `=== CURRENT DRAFT STAGE ===` for reviewers. If <vault>/stage.md exists, returns its contents verbatim (author override). Otherwise synthesizes a stage description from the book note and the chapter files in Story/ (titles, acts, scene counts, word counts, status)."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -259,22 +254,22 @@ func main() {
 			if override := v.ReadStage(); strings.TrimSpace(override) != "" {
 				return mcp.NewToolResultText(override), nil
 			}
-			p, err := v.ReadProject()
+			b, err := v.ReadBook()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read project: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read book: %v", err)), nil
 			}
-			scenes, err := v.ReadScenes()
+			chapters, err := v.ReadChapters()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
 			}
-			return mcp.NewToolResultText(v.DerivedStage(p, scenes)), nil
+			return mcp.NewToolResultText(v.DerivedStage(b, chapters)), nil
 		},
 	)
 
 	// read-style-guide
 	s.AddTool(
 		mcp.NewTool("read-style-guide",
-			mcp.WithDescription("Return the project's style guide. Looks for <vault>/style.md first; falls back to <vault>/Research/style.md if the root file is absent. Returns empty string if neither exists."),
+			mcp.WithDescription("Return the project's style guide. Looks for <vault>/style.md first; falls back to <vault>/Background/style.md. Returns empty string if neither exists."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -282,23 +277,14 @@ func main() {
 			if vErr != nil {
 				return vaultErr(vErr), nil
 			}
-			if content := v.ReadStyleGuide(); strings.TrimSpace(content) != "" {
-				return mcp.NewToolResultText(content), nil
-			}
-			research, _ := v.ReadResearchFiles()
-			for path, content := range research {
-				if strings.EqualFold(filepathBase(path), "style.md") {
-					return mcp.NewToolResultText(content), nil
-				}
-			}
-			return mcp.NewToolResultText(""), nil
+			return mcp.NewToolResultText(v.ReadStyleGuide()), nil
 		},
 	)
 
 	// read-research
 	s.AddTool(
 		mcp.NewTool("read-research",
-			mcp.WithDescription("Concatenate every markdown file under <vault>/Research/ into one block, with `### <relative-path>` headers between files. Use to inline worldbuilding context for reviewers."),
+			mcp.WithDescription("Concatenate the worldbuilding docs (every markdown file under <vault>/Background/ except the Characters/ and Locations/ entries) into one block, with `### <relative-path>` headers between files. Use to inline worldbuilding context for reviewers."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -317,7 +303,7 @@ func main() {
 	// read-codex
 	s.AddTool(
 		mcp.NewTool("read-codex",
-			mcp.WithDescription("Concatenate Codex entries (Characters + Locations) into one block, with `### <relative-path>` headers. Pass `names` (comma-separated entity names matching filenames without .md) to filter; omit for all entries. Use to inline character/location reference data for reviewers."),
+			mcp.WithDescription("Concatenate Codex entries (Background/Characters + Background/Locations) into one block, with `### <relative-path>` headers. Pass `names` (comma-separated entity names matching filenames without .md) to filter; omit for all entries. Use to inline character/location reference data for reviewers."),
 			vaultParam,
 			mcp.WithString("names", mcp.Description("Comma-separated list of entity names (filenames without .md). Omit or pass empty for all entries.")),
 		),
@@ -345,7 +331,7 @@ func main() {
 	// read-codex-entry
 	s.AddTool(
 		mcp.NewTool("read-codex-entry",
-			mcp.WithDescription("Read a single Codex entry by name (filename without .md). Searches Characters/ then Locations/. Use for on-demand lookups by Claude when reviewing prose."),
+			mcp.WithDescription("Read a single Codex entry by name (filename without .md). Searches Background/Characters/ then Background/Locations/. Use for on-demand lookups by Claude when reviewing prose."),
 			vaultParam,
 			mcp.WithString("name", mcp.Required(), mcp.Description("Entity name, matching the filename without .md (e.g. \"Henry Nelson\", \"Fontenoy Harbor\").")),
 		),
@@ -369,7 +355,7 @@ func main() {
 	// assemble-manuscript
 	s.AddTool(
 		mcp.NewTool("assemble-manuscript",
-			mcp.WithDescription("Return the full manuscript assembled from the storyline project's Scenes/ folder, in the same Markdown format the storyline plugin's `Export project` command produces (# Title, ## Act N: <label>, ### Chapter N: <label>, #### <scene title>, body). Use to inline the manuscript for Claude subagents."),
+			mcp.WithDescription("Return the full manuscript assembled from the chapter files in <vault>/Story/, sorted act → chapter, as Markdown: # Title, ## Act N: <label>, ### Chapter N: <title>, #### <scene title>, body (wikilinks stripped). Use to inline the manuscript for Claude subagents."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -388,7 +374,7 @@ func main() {
 	// list-codex-entries
 	s.AddTool(
 		mcp.NewTool("list-codex-entries",
-			mcp.WithDescription("List every Codex entry name (filename without .md), from Codex/Characters/ and Codex/Locations/. Returns one name per line, sorted. Use to give a subagent the canonical entity roster so it can flag prose mentions of unknown entities."),
+			mcp.WithDescription("List every Codex entry name (filename without .md), from Background/Characters/ and Background/Locations/. Returns one name per line, sorted. Use to give a subagent the canonical entity roster so it can flag prose mentions of unknown entities."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -407,7 +393,7 @@ func main() {
 	// find-entity-mentions
 	s.AddTool(
 		mcp.NewTool("find-entity-mentions",
-			mcp.WithDescription("Scan every scene in the storyline project for case-insensitive substring matches of an entity name. Returns JSON array `[{filename, act, chapter, sequence, title, body}]` of scenes that mention the entity, in manuscript order. Use for entity-mode canon extraction (gather all mentions of one entity across the book in a single call)."),
+			mcp.WithDescription("Scan every scene for case-insensitive substring matches of an entity name. Returns JSON array `[{id, chapter, scene, title, body}]` of scenes that mention the entity, in manuscript order. `id` is the scene address (`CC-SS`). Use for entity-mode canon extraction (gather all mentions of one entity across the book in a single call)."),
 			vaultParam,
 			mcp.WithString("name", mcp.Required(), mcp.Description("Entity name to search for (case-insensitive substring match against scene body text).")),
 		),
@@ -421,30 +407,28 @@ func main() {
 			if needle == "" {
 				return mcp.NewToolResultError("name is empty"), nil
 			}
-			scenes, err := v.ReadScenes()
+			chapters, err := v.ReadChapters()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
 			}
 			type match struct {
-				Filename string `json:"filename"`
-				Act      int    `json:"act"`
-				Chapter  int    `json:"chapter"`
-				Sequence int    `json:"sequence"`
-				Title    string `json:"title"`
-				Body     string `json:"body"`
+				ID      string `json:"id"`
+				Chapter int    `json:"chapter"`
+				Scene   int    `json:"scene"`
+				Title   string `json:"title"`
+				Body    string `json:"body"`
 			}
-			var hits []match
-			for _, s := range scenes {
+			hits := []match{}
+			for _, s := range vault.AllScenes(chapters) {
 				if !strings.Contains(strings.ToLower(s.Body), needle) {
 					continue
 				}
 				hits = append(hits, match{
-					Filename: s.Filename,
-					Act:      s.Act,
-					Chapter:  s.Chapter,
-					Sequence: s.Sequence,
-					Title:    s.Title,
-					Body:     s.Body,
+					ID:      s.ID(),
+					Chapter: s.Chapter,
+					Scene:   s.Index,
+					Title:   s.Title,
+					Body:    s.Body,
 				})
 			}
 			data, _ := json.Marshal(hits)
@@ -455,9 +439,9 @@ func main() {
 	// assemble-chapter
 	s.AddTool(
 		mcp.NewTool("assemble-chapter",
-			mcp.WithDescription("Return the assembled text of one chapter (all scenes for the given chapter number, sorted by sequence, formatted as `### Chapter N: <label>\\n\\n#### <scene title>\\n\\n<body>`) plus the union of entity names referenced in those scenes' frontmatter (POV, characters, location). Response is JSON: {text, entities, scene_count}. Use to scope a chapter review and prefilter Codex."),
+			mcp.WithDescription("Return the assembled text of one chapter (`### Chapter N: <title>\\n\\n#### <scene title>\\n\\n<body>` for each scene in file order) plus the union of entity names in the chapter's frontmatter (POV, characters, locations, and each scene's metadata). Response is JSON: {text, entities, scene_count, title, file}. Use to scope a chapter review and prefilter Codex."),
 			vaultParam,
-			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter number (integer, matches the `chapter:` frontmatter field on scenes).")),
+			mcp.WithString("chapter", mcp.Required(), mcp.Description("Chapter number (integer, matches the `chapter:` frontmatter field, or the leading number of the file name in Story/).")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v, vErr := vaultFromReq(req)
@@ -469,29 +453,20 @@ func main() {
 			if _, err := fmt.Sscanf(strings.TrimSpace(chapterStr), "%d", &chapter); err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("chapter must be an integer: %q", chapterStr)), nil
 			}
-			p, err := v.ReadProject()
+			chapters, err := v.ReadChapters()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read project: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
 			}
-			scenes, err := v.ReadScenes()
-			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+			ch, ok := vault.FindChapter(chapters, chapter)
+			if !ok {
+				return mcp.NewToolResultError(fmt.Sprintf("no chapter %d in Story/", chapter)), nil
 			}
-			var chScenes []vault.Scene
-			for _, s := range scenes {
-				if s.Chapter == chapter {
-					chScenes = append(chScenes, s)
-				}
-			}
-			if len(chScenes) == 0 {
-				return mcp.NewToolResultError(fmt.Sprintf("no scenes found for chapter %d", chapter)), nil
-			}
-			text := vault.RenderChapter(p, chapter, chScenes)
-			entities := vault.SceneEntityNames(chScenes)
 			data, _ := json.Marshal(map[string]any{
-				"text":        text,
-				"entities":    entities,
-				"scene_count": len(chScenes),
+				"text":        vault.RenderChapter(*ch),
+				"entities":    vault.ChapterEntityNames(*ch),
+				"scene_count": len(ch.Scenes),
+				"title":       ch.Title,
+				"file":        ch.Filename + ".md",
 			})
 			return mcp.NewToolResultText(string(data)), nil
 		},
@@ -500,9 +475,9 @@ func main() {
 	// read-scene
 	s.AddTool(
 		mcp.NewTool("read-scene",
-			mcp.WithDescription("Return one scene's assembled text (`#### <title>\\n\\n<body>`, wikilinks stripped) plus the entity names from its frontmatter. Response is JSON: {text, entities, act, chapter, sequence, title}. Use to scope a single-scene review and prefilter Codex."),
+			mcp.WithDescription("Return one scene's assembled text (`#### <title>\\n\\n<body>`, wikilinks stripped) plus the entity names from its metadata in the chapter frontmatter. Response is JSON: {id, chapter, scene, chapter_title, title, text, entities}. Use to scope a single-scene review and prefilter Codex."),
 			vaultParam,
-			mcp.WithString("scene", mcp.Required(), mcp.Description("Scene filename, with or without .md (e.g. \"01-01 Customs at Fontenoy\" or \"01-01 Customs at Fontenoy.md\").")),
+			mcp.WithString("scene", mcp.Required(), mcp.Description("Scene address `CC-SS` (chapter, then position in the chapter: \"01-02\", \"1-2\", or \"1.2\"; a trailing title is ignored, so old scene filenames like \"01-02 Lord Andrews Warning\" work), or an exact scene title.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v, vErr := vaultFromReq(req)
@@ -510,39 +485,31 @@ func main() {
 				return vaultErr(vErr), nil
 			}
 			sceneArg, _ := req.RequireString("scene")
-			sceneArg = strings.TrimSuffix(strings.TrimSpace(sceneArg), ".md")
-			scenes, err := v.ReadScenes()
+			chapters, err := v.ReadChapters()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
 			}
-			var found *vault.Scene
-			for i := range scenes {
-				if scenes[i].Filename == sceneArg {
-					found = &scenes[i]
-					break
-				}
+			found, err := vault.FindScene(chapters, sceneArg)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
 			}
-			if found == nil {
-				return mcp.NewToolResultError(fmt.Sprintf("scene %q not found in Scenes/", sceneArg)), nil
-			}
-			text := vault.RenderScene(*found)
-			entities := vault.SceneEntityNames([]vault.Scene{*found})
 			data, _ := json.Marshal(map[string]any{
-				"text":     text,
-				"entities": entities,
-				"act":      found.Act,
-				"chapter":  found.Chapter,
-				"sequence": found.Sequence,
-				"title":    found.Title,
+				"id":            found.ID(),
+				"chapter":       found.Chapter,
+				"scene":         found.Index,
+				"chapter_title": found.ChapterTitle,
+				"title":         found.Title,
+				"text":          vault.RenderScene(*found),
+				"entities":      vault.SceneEntityNames([]vault.Scene{*found}),
 			})
 			return mcp.NewToolResultText(string(data)), nil
 		},
 	)
 
-	// list-scenes
+	// list-chapters
 	s.AddTool(
-		mcp.NewTool("list-scenes",
-			mcp.WithDescription("List every scene in the storyline project, one per line, formatted as `act/chapter/sequence | filename | title`. Sorted in manuscript order (act → chapter → sequence)."),
+		mcp.NewTool("list-chapters",
+			mcp.WithDescription("List every chapter in Story/, one per line, formatted as `<chapter> | <file> | <title> | <scenes> scene(s) | ~<words> words | <status>`. Sorted in manuscript order (act → chapter). Untitled chapters show `(untitled)`."),
 			vaultParam,
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -550,13 +517,51 @@ func main() {
 			if vErr != nil {
 				return vaultErr(vErr), nil
 			}
-			scenes, err := v.ReadScenes()
+			chapters, err := v.ReadChapters()
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("read scenes: %v", err)), nil
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
 			}
 			var b strings.Builder
-			for _, s := range scenes {
-				fmt.Fprintf(&b, "%d/%d/%d | %s | %s\n", s.Act, s.Chapter, s.Sequence, s.Filename, s.Title)
+			for _, ch := range chapters {
+				title := ch.Title
+				if title == "" {
+					title = "(untitled)"
+				}
+				status := ch.Status
+				if status == "" {
+					status = "-"
+				}
+				fmt.Fprintf(&b, "%d | %s.md | %s | %d scene(s) | ~%d words | %s\n",
+					ch.Number, ch.Filename, title, len(ch.Scenes), vault.ChapterWordCount(ch), status)
+			}
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+		},
+	)
+
+	// list-scenes
+	s.AddTool(
+		mcp.NewTool("list-scenes",
+			mcp.WithDescription("List every scene, one per line, formatted as `<id> | <chapter file> | <scene title>`, where <id> is the scene address `CC-SS` (chapter, then position within the chapter). Sorted in manuscript order. Pass the id to read-scene."),
+			vaultParam,
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			chapters, err := v.ReadChapters()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("read chapters: %v", err)), nil
+			}
+			var b strings.Builder
+			for _, ch := range chapters {
+				for _, sc := range ch.Scenes {
+					title := sc.Title
+					if title == "" {
+						title = "(untitled)"
+					}
+					fmt.Fprintf(&b, "%s | %s.md | %s\n", sc.ID(), ch.Filename, title)
+				}
 			}
 			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
 		},
@@ -644,26 +649,85 @@ func main() {
 	// snapshot-and-diff
 	s.AddTool(
 		mcp.NewTool("snapshot-and-diff",
-			mcp.WithDescription("Atomic: writes a new snapshot of story/ to review/.snapshots/<prefix>-<timestamp>.md, locates the prior snapshot for the same prefix, computes a unified diff against it, and saves the diff as a paired <prefix>-<timestamp>.diff file alongside the snapshot. Returns JSON {snapshot_path, prior_path, diff_path, diff_text}. If there's no prior snapshot (first run) or the manuscript is unchanged, diff_path and diff_text are empty."),
+			mcp.WithDescription("Atomic: assembles the manuscript from Story/, writes it to Review/.snapshots/<lineage>-<timestamp>.md with a .json sidecar recording which review took it, locates the prior snapshot in the same lineage, computes a unified diff against it, and saves the diff as a paired .diff file. Returns JSON {snapshot_path, prior_path, diff_path, diff_text, changed_scenes, changed_text}. changed_scenes lists every added, modified, or removed scene with word counts; changed_text is the full prose of the added and modified scenes under their headings. Lineages never see each other's snapshots: a craft review diffs only against craft snapshots. Snapshots from before lineages existed (manuscript-*.md) belong to the publication lineage. A prior snapshot recorded for the same or a later review number is the orphan of a run that died and is skipped. When the lineage has no prior snapshot or nothing changed, diff_path, diff_text, and changed_text are empty and changed_scenes is []."),
 			vaultParam,
-			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
+			mcp.WithString("lineage", mcp.Required(), mcp.Description("Snapshot lineage to write into and diff within: \"craft\" or \"publication\" (lowercase letters, digits, hyphens).")),
+			mcp.WithString("kind", mcp.Description("Review prefix this snapshot is taken for, e.g. delta-craft, manuscript-craft, manuscript-critic. Recorded in the sidecar.")),
+			mcp.WithNumber("review", mcp.Description("Review number this snapshot is taken for (from next-review-number). Recorded in the sidecar and used to skip orphaned snapshots.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v, vErr := vaultFromReq(req)
 			if vErr != nil {
 				return vaultErr(vErr), nil
 			}
-			prefix, _ := req.RequireString("prefix")
-			snapshotPath, priorPath, diffPath, diffText, err := v.SnapshotAndDiff(prefix)
+			meta := snapshotMetaFromReq(req)
+			snapshotPath, priorPath, diffPath, diffText, err := v.SnapshotAndDiff(meta)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("snapshot-and-diff: %v", err)), nil
 			}
-			data, _ := json.Marshal(map[string]string{
-				"snapshot_path": snapshotPath,
-				"prior_path":    priorPath,
-				"diff_path":     diffPath,
-				"diff_text":     diffText,
+			changes := vault.ChangeSet{Scenes: []vault.SceneChange{}}
+			if diffText != "" {
+				changes, err = v.SnapshotChanges(priorPath, snapshotPath)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("snapshot-and-diff: %v", err)), nil
+				}
+			}
+			data, _ := json.Marshal(map[string]any{
+				"snapshot_path":  snapshotPath,
+				"prior_path":     priorPath,
+				"diff_path":      diffPath,
+				"diff_text":      diffText,
+				"changed_scenes": changes.Scenes,
+				"changed_text":   changes.Text,
 			})
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// list-snapshots
+	s.AddTool(
+		mcp.NewTool("list-snapshots",
+			mcp.WithDescription("List manuscript snapshots, oldest first, with what each was taken for. Returns JSON [{path, diff_path, lineage, kind, review, created}]. Pass lineage to limit to one lineage."),
+			vaultParam,
+			mcp.WithString("lineage", mcp.Description("Optional lineage filter, e.g. craft or publication.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			snaps := v.ListSnapshots(optString(req, "lineage"))
+			if snaps == nil {
+				snaps = []vault.Snapshot{}
+			}
+			data, _ := json.Marshal(snaps)
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// changed-scenes
+	s.AddTool(
+		mcp.NewTool("changed-scenes",
+			mcp.WithDescription("Compare two manuscript snapshots scene by scene. Returns JSON {scenes: [{chapter, scene, change, words_before, words_after}], text}. `change` is added, modified, or removed; `text` is the full prose of every added or modified scene under its chapter and scene headings, in manuscript order, so reviewers can be pointed at exactly what the author touched. A retitled scene reads as removed plus added."),
+			vaultParam,
+			mcp.WithString("prior", mcp.Required(), mcp.Description("Path to the older snapshot (vault-relative or absolute).")),
+			mcp.WithString("current", mcp.Required(), mcp.Description("Path to the newer snapshot.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			v, vErr := vaultFromReq(req)
+			if vErr != nil {
+				return vaultErr(vErr), nil
+			}
+			prior, _ := req.RequireString("prior")
+			current, _ := req.RequireString("current")
+			changes, err := v.SnapshotChanges(prior, current)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("changed-scenes: %v", err)), nil
+			}
+			if changes.Scenes == nil {
+				changes.Scenes = []vault.SceneChange{}
+			}
+			data, _ := json.Marshal(changes)
 			return mcp.NewToolResultText(string(data)), nil
 		},
 	)
@@ -671,17 +735,18 @@ func main() {
 	// write-snapshot
 	s.AddTool(
 		mcp.NewTool("write-snapshot",
-			mcp.WithDescription("Concatenate every chapter file in story/ into a single timestamped snapshot under review/.snapshots/<prefix>-<timestamp>.md. Returns JSON {path, prior_path}. prior_path is the vault-relative path of the most recent prior snapshot with the same prefix (empty if none)."),
+			mcp.WithDescription("Assemble the manuscript from Story/ into a single timestamped snapshot under Review/.snapshots/<lineage>-<timestamp>.md with a .json sidecar. Returns JSON {path, prior_path}. prior_path is the most recent prior snapshot in the same lineage (empty if none). Prefer snapshot-and-diff for reviews."),
 			vaultParam,
-			mcp.WithString("prefix", mcp.Required(), mcp.Description("Snapshot filename prefix (e.g. \"manuscript\").")),
+			mcp.WithString("lineage", mcp.Required(), mcp.Description("Snapshot lineage: \"craft\" or \"publication\".")),
+			mcp.WithString("kind", mcp.Description("Review prefix this snapshot is taken for. Recorded in the sidecar.")),
+			mcp.WithNumber("review", mcp.Description("Review number this snapshot is taken for. Recorded in the sidecar.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			v, vErr := vaultFromReq(req)
 			if vErr != nil {
 				return vaultErr(vErr), nil
 			}
-			prefix, _ := req.RequireString("prefix")
-			path, priorPath, err := v.WriteSnapshot(prefix)
+			path, priorPath, err := v.WriteSnapshot(snapshotMetaFromReq(req))
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("write snapshot: %v", err)), nil
 			}
@@ -749,7 +814,7 @@ func main() {
 	s.AddTool(
 		mcp.NewTool("write-setting",
 			mcp.WithDescription("Write a critic plugin setting."),
-			mcp.WithString("key", mcp.Required(), mcp.Description("Setting key (e.g. vault_path, gemini_api_key, claude_enabled)")),
+			mcp.WithString("key", mcp.Required(), mcp.Description("Setting key: vault_path, frame, codex_enabled, codex_model, openai_api_key, pi_enabled, pi_provider, pi_model, adversary_provider, adversary_model, claude_enabled, claude_model")),
 			mcp.WithString("value", mcp.Required(), mcp.Description("Setting value")),
 		),
 		makeWriteSettingHandler(),
@@ -769,6 +834,19 @@ func main() {
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// snapshotMetaFromReq reads the lineage, kind, and review arguments shared
+// by the snapshot tools.
+func snapshotMetaFromReq(req mcp.CallToolRequest) vault.SnapshotMeta {
+	meta := vault.SnapshotMeta{
+		Lineage: optString(req, "lineage"),
+		Kind:    optString(req, "kind"),
+	}
+	if r, ok := optFloat(req, "review"); ok {
+		meta.Review = int(r)
+	}
+	return meta
 }
 
 func vaultFromReq(req mcp.CallToolRequest) (*vault.Vault, error) {

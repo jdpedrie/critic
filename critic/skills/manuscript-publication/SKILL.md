@@ -1,9 +1,15 @@
 ---
-name: manuscript
-description: Multi-reviewer manuscript review. Interactive setup (which reviewers, which Pi model, which steps), then non-interactive execution. Use when the user wants honest, publishing-consultant-grade feedback on the full manuscript.
+name: manuscript-publication
+description: Whole-manuscript review in the publication frame. Reviewers act as consultants to the literary agent who represents the author and judge the foundations against a finished, saleable book. Interactive setup (which reviewers, which Pi model, which steps), then non-interactive execution. Use when the manuscript is headed for submission. For a project with no publisher in the picture, use /critic:manuscript-craft instead.
 ---
 
-# Manuscript Review
+# Manuscript Review (publication frame)
+
+This is the publication frame: reviewers advise a literary agent, and the
+bar is a finished book an acquiring editor would buy. Prior issues are
+tracked across reviews and reviewers are asked whether they were addressed.
+The craft frame (`/critic:manuscript-craft`) shares this procedure but swaps
+the prompts and drops the ledger; see that skill for the differences.
 
 The vault path is the user's configured vault. Call `read-settings` first to get `vault_path`. If it isn't set, ask the user for it before doing anything else.
 
@@ -16,8 +22,8 @@ If $ARGUMENTS is non-empty, treat it as an **author's note** for this review: a 
 If $ARGUMENTS is empty, no note is included. Proceed normally.
 
 Examples:
-- `/critic:manuscript tightened the chapter 4 cafe scene and added the chapel scene to give Byrne some interiority`
-- `/critic:manuscript trying to fix the agency problem from the last review. Added a moment where Henry actually chooses`
+- `/critic:manuscript-publication tightened the chapter 4 cafe scene and added the chapel scene to give Byrne some interiority`
+- `/critic:manuscript-publication trying to fix the agency problem from the last review. Added a moment where Henry actually chooses`
 
 The note is distinct from `stage.md`:
 - `stage.md` describes the long-running project state (act 1, target length, what hasn't been attempted).
@@ -60,7 +66,7 @@ Present these toggles. Default in parens.
 - Adversarial pass (on, only if Pi enabled)
 - Cross-review round, including the adversary as a 4th matrix participant (on)
 - Synthesis (on)
-- Save to `review/` (on)
+- Save to `Review/` (on)
 
 Accept "all", "default", or specific opt-outs ("skip cross-review", "no adversarial").
 
@@ -105,7 +111,7 @@ run dies part-way, finished reviews survive there, and `invoke-status` with no
 
 ### B1. Load prior review summary (if step enabled)
 
-Find the most recent `review/NNN-manuscript-critic-*.md` file. Use the parent's built-in `Glob` and `Read` tools. Cut at the sentinel `<!-- RAW AGENT OUTPUTS BELOW. NOT INCLUDED IN FUTURE REVIEW CONTEXT -->`; keep only the synthesis portion above it.
+Find the most recent publication-lineage review: the highest-numbered file matching `Review/NNN-manuscript-critic-*.md` or `Review/NNN-delta-publication-*.md`. Craft-lineage reviews (`manuscript-craft`, `delta-craft`) are never loaded here. Use the parent's built-in `Glob` and `Read` tools. Cut at the sentinel `<!-- RAW AGENT OUTPUTS BELOW. NOT INCLUDED IN FUTURE REVIEW CONTEXT -->`; keep only the synthesis portion above it.
 
 Also: read `issues.md` from the vault root (if present) for known/deferred issues.
 
@@ -115,13 +121,13 @@ Call `next-review-number` (no args except vault).
 
 ### B3. Snapshot the manuscript and diff against the prior snapshot
 
-Call `snapshot-and-diff(vault: <vault>, prefix: "manuscript")`. The tool atomically:
-- Assembles the full manuscript from `Scenes/` (sorted act → chapter → sequence, in the same Markdown format the storyline plugin's `Export project` command produces) and writes it to `review/.snapshots/manuscript-<timestamp>.md`
-- Finds the prior `manuscript-*.md` snapshot
-- If a prior exists and the content differs, computes a unified diff and saves it as a paired `manuscript-<timestamp>.diff` file alongside the snapshot
-- Returns JSON `{snapshot_path, prior_path, diff_path, diff_text}` (all vault-relative; empty strings where not applicable).
+Call `snapshot-and-diff(vault: <vault>, lineage: "publication", kind: "manuscript-critic", review: <N from B2>)`. The tool atomically:
+- Assembles the full manuscript from the chapter files in `Story/` (sorted by chapter number, with `# Title` / `## Act N` / `### Chapter N` / `#### <scene>` headings) and writes it to `Review/.snapshots/publication-<timestamp>.md`, with a `.json` sidecar recording this review
+- Finds the prior snapshot in the publication lineage. Snapshots from before lineages existed (`manuscript-*.md`) count as publication; craft snapshots are never used
+- If a prior exists and the content differs, computes a unified diff and saves it as a paired `publication-<timestamp>.diff` file alongside the snapshot
+- Returns JSON `{snapshot_path, prior_path, diff_path, diff_text, changed_scenes, changed_text}` (paths vault-relative; empty where not applicable). `changed_scenes` lists each added, modified, or removed scene with word counts. Use it to keep the summary accurate. `changed_text` (the full prose of the changed scenes) is for `/critic:delta`; ignore it here.
 
-If `diff_text` is empty (first manuscript run ever, or no substantive changes): skip to B4. Hold `diff_summary` as `""` and `diff_full_path` as `""`.
+If `diff_text` is empty (first run in the publication lineage, or no substantive changes): skip to B4. Hold `diff_summary` as `""` and `diff_full_path` as `""`.
 
 If `diff_text` is non-empty:
 1. Read `diff_text` yourself. Write a concise summary. A couple sentences per chapter that actually changed, plus a one-line note on structural shifts (new chapters, reorders, large rewrites). The summary is what reviewers see; the full diff file is already on disk at `diff_path` for the user to inspect.
@@ -150,8 +156,8 @@ worldbuilding bible bloats context and invites reviewers to fill gaps with
 insider knowledge instead of flagging them. Canon-consistency work belongs
 to `/critic:extract` and `/critic:close-read`.
 
-- **Current draft stage**: call `read-stage(vault: <vault>)`, prefix with `=== CURRENT DRAFT STAGE ===`. If the author has written `<vault>/stage.md` it's used verbatim; otherwise the server synthesizes a stage description from the storyline project frontmatter (acts/chapters/labels) and scene metadata. This tells reviewers what fraction of the book they're seeing. CRITICAL: include this block first. Reviewers must calibrate their entire assessment against it.
-- **Style guide**: call `read-style-guide(vault: <vault>)`, prefix with `=== STYLE GUIDE ===`. Skip if empty. The tool checks `<vault>/style.md` first, then falls back to `<vault>/Research/style.md`.
+- **Current draft stage**: call `read-stage(vault: <vault>)`, prefix with `=== CURRENT DRAFT STAGE ===`. If the author has written `<vault>/stage.md` it's used verbatim; otherwise the server synthesizes a stage description from the book note and the chapter files (titles, acts, scene counts, word counts, status). This tells reviewers what fraction of the book they're seeing. CRITICAL: include this block first. Reviewers must calibrate their entire assessment against it.
+- **Style guide**: call `read-style-guide(vault: <vault>)`, prefix with `=== STYLE GUIDE ===`. Skip if empty. The tool checks `<vault>/style.md` first, then falls back to `<vault>/Background/style.md`.
 - **Known issues**: call `read-issues(vault: <vault>)`, prefix with `=== KNOWN ISSUES ===`. Skip if empty.
 - **Prior review summary** (if loaded in B1): prefix with `=== PRIOR REVIEW SUMMARY ===`
 - **Diff summary** (if generated in B3): prefix with `=== CHANGES SINCE LAST REVIEW ===` and tell the reader: "This summarizes what the author actually changed since the previous review. Use it to assess whether prior issues were addressed and what the changes introduced. The full diff is on disk at `<diff_full_path>` if you need it (but reviewers don't have a way to fetch it; only the orchestrator and the user can read it)."
@@ -334,7 +340,7 @@ Tell the user the saved file path and review number. Then present the synthesis 
 ## Notes
 
 - Run Phase B straight through. Do not stop between steps, except on reviewer failure (see the Phase B header).
-- The source of truth is the storyline project at `<vault>`. Get the manuscript via `assemble-manuscript`; do not read `Scenes/` files individually or fall back to `summary/` (out of date) or `review/` (those are reviews, not source).
+- The source of truth is the chapter files in `<vault>/Story/`. Get the manuscript via `assemble-manuscript`; do not read chapter files individually or fall back to `summary/` (out of date) or `Review/` (those are reviews, not source).
 - For step toggles, default to "on" if the user said "all" or didn't specify.
 - All reviewers see the same user-prompt prefix (stage + style + known issues + prior review summary + diff + author note). No Research or Codex blocks; manuscript reviewers read as readers, not as editors with insider knowledge. The manuscript text is appended by the MCP server for invoke-* calls (via `include_manuscript_from`); you inline it explicitly for Claude subagents via `assemble-manuscript`.
 - Issue IDs use the review number from B2 padded to 3 digits.

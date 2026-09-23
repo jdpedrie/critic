@@ -19,9 +19,31 @@ Templates use Go `text/template` syntax. Variables are passed by skills as a JSO
 | File | Variables |
 |------|-----------|
 | `review-base.md` | `{{.Role}}`, `{{.MaxIssues}}` |
+| `delta.md` | `{{.MaxIssues}}` |
 | `cross-review.md` | `{{.MaxNewIssues}}` |
-| `synthesis.md` | `{{.ReviewNum}}` (zero-padded to 3 digits) |
+| `synthesis.md`, `synthesis-craft.md`, `synthesis-delta.md` | `{{.ReviewNum}}` (zero-padded to 3 digits) |
 | All others | None |
+
+## Two frames
+
+The prompts come in two sets that differ in who the reviewer answers to and what the book is measured against.
+
+| Slot | Publication frame | Craft frame |
+|------|-------------------|-------------|
+| Framing | `agent-framing.md` | `craft-framing.md` |
+| Manuscript body | `manuscript.md` | `manuscript-craft.md` |
+| Verdict | `verdict.md` | `verdict-craft.md` |
+| Rejection pass | `rejection-pass.md` | `rejection-pass-craft.md` |
+| Adversary | `adversarial.md` | `adversarial-craft.md` (the frank reader) |
+| Synthesis | `synthesis.md` | `synthesis-craft.md` |
+
+In the publication frame the reviewer is a consultant to the literary agent who represents the author, and the bar is a finished book an acquiring editor would buy. Prior issues are tracked: reviewers are asked whether they were addressed.
+
+In the craft frame the reviewer is a consulting reader for the author's developmental editor. The bar is professional craft; the measure is the author's stated intent from the stage block and the author's note. Market, comparable titles, and acquisition are out of scope, and the framing tells reviewers to disregard a style guide that invites them. The author's pace and process are out of scope. The prior review is context, not a checklist: an unaddressed issue is a sequencing decision, and reviewers must not count cycles, cite prior IDs, or report what was or wasn't addressed.
+
+The anti-flattery machinery is the same in both: the reviewer answers to a third party, the rejection pass and the adversary push against the constructive reviews, and cross-review forces the reviewers to check each other. What changes is what they want for the book.
+
+`delta.md` and `synthesis-delta.md` are the changes-only review used by `/critic:delta`. They sit under either framing.
 
 ## The catalog
 
@@ -31,11 +53,29 @@ Used by all reviewers. The publishing-consultant framing. "You're advising a lit
 
 Goes into the system prompt first. Sets the role and the disposition.
 
+### craft-framing.md
+
+The craft-frame counterpart. "You are a consulting reader evaluating an in-progress manuscript for the developmental editor who works with the author. Nobody here is selling this book." Same stage-block calibration as `agent-framing.md`, then the craft-frame contract: market and process out of scope, the prior review is context and not a checklist, rebuttals are decisions. Kindness that hides a problem is a disservice.
+
+Goes first in every craft-frame system prompt.
+
 ### manuscript.md
 
 The manuscript-review instructions. What the reviewer is being asked to assess (foundations, momentum, premise delivery, voice), how to organise their report (verdict, biggest risk, biggest strength, strongest passages, foundation test), what to weight against the draft stage.
 
-Used by `/critic:manuscript`. Goes after `agent-framing.md` in the system prompt.
+Used by `/critic:manuscript-publication`. Goes after `agent-framing.md` in the system prompt.
+
+### manuscript-craft.md
+
+The craft-frame manuscript body. Same six whole-book sections (foundations, pacing, character work, threads, tone, prose), preceded by a `## The changes` section that appears only when the input carries a changes block or an author's note: what the author set out to do, did it land, is the new material good on its own terms against the manuscript's best, what did it cost. Calibration rules add "the author's process is not a finding" and drop the commercial verdict line.
+
+Used by `/critic:manuscript-craft`.
+
+### delta.md
+
+The changes-only review. The full manuscript is context; the target is the scenes listed under `=== CHANGED SCENES ===` and reproduced under `=== CHANGED MATERIAL ===`. Sections: what the author set out to do, did it land, on its own merits, what it cost, issues (capped at `{{.MaxIssues}}`, each in the changed material or caused by it), strengths, and a verdict on the changes. Unchanged material is reviewed only where the changes touch it.
+
+Used by `/critic:delta` under either framing.
 
 ### verdict.md
 
@@ -43,7 +83,13 @@ The verdict structure every primary reviewer must emit at the end of their revie
 
 Verdicts are calibrated against the stage block, not against a hypothetical finished book. The four labels are explicit and the prompt explains each.
 
-Used by `/critic:manuscript` and `/critic:review`. Goes last in the system prompt.
+Used by `/critic:manuscript-publication` and, in the publication frame, `/critic:review`. Goes last in the system prompt.
+
+### verdict-craft.md
+
+Same four labels, glossed against the pages rather than a finished book. When the input carries changes or an author's note it adds two lines: whether the changes landed (landed / partly landed / didn't land) and whether the new material sits above, at, or below the manuscript's best. The foundation test becomes a direction test: if the author keeps writing at this level and in this direction, does it become the book the stage block describes? The biggest risk is explicitly not the author's process.
+
+Used by `/critic:manuscript-craft` and, in the craft frame, `/critic:review`.
 
 ### review-base.md
 
@@ -75,23 +121,43 @@ The constructive variant. Used by all four cross-review roles. The adversary mai
 
 Used by the synthesis subagent. Instructions for producing the final ranked-issue report with stable `ISSUE-{{.ReviewNum}}-NN` IDs. Tells the synthesiser how to reconcile contradictions, attribute issues to reviewers, group related issues, rank by significance, and format each issue block.
 
+### synthesis-craft.md
+
+The craft-frame synthesis. Same ID scheme and sections, with a `## The Changes` section first when the input carries changes or a note, and three added rules: no ledger (no prior IDs, no cycle counts, no report of what was or wasn't addressed), no process, no market.
+
+### synthesis-delta.md
+
+The synthesis for `/critic:delta`. Sections: the intent, did it land, on its own merits, what it cost, critical issues, contested points, strengths, open questions, and a verdict on the changes. Told not to re-review the whole manuscript.
+
 ### rejection-pass.md
 
 The rejection pass. Claude's second turn on its own review. The instructions tell the subagent to be blunt: knock out issues that don't survive scrutiny, sharpen the ones that do, surface anything the constructive pass softened.
 
-Used by `/critic:manuscript` as part of the Claude-subagent's combined review + rejection pass. The subagent gets its own review verbatim in context and is told to rebut itself.
+Used by `/critic:manuscript-publication` as part of the Claude-subagent's combined review + rejection pass. The subagent gets its own review verbatim in context and is told to rebut itself.
+
+### rejection-pass-craft.md
+
+The craft-frame rejection pass. Same five questions with item three retargeted: instead of "the one thing that kills the sale", it's the single thing a serious reader would most hold against the book as it stands. Explicitly not about sales or the author's pace.
+
+Used by `/critic:manuscript-craft` and `/critic:delta`.
 
 ### adversarial.md
 
 The Pi adversary's system prompt. A different framing from the constructive reviewers. Assume the author is trying to flatter the reviewer. Assume the prose is hiding its problems. Assume "literary" is doing work it shouldn't have to do.
 
-Used by `/critic:manuscript` as the adversary's system prompt. The adversary participates in cross-review as a fourth matrix member, keeping its harsh stance via session continuity.
+Used by `/critic:manuscript-publication` as the adversary's system prompt. The adversary participates in cross-review as a fourth matrix member, keeping its harsh stance via session continuity.
+
+### adversarial-craft.md
+
+The frank reader: the craft frame's adversary. Same panel role, same refusal to pull punches, but the target is where the book is not doing what it's trying to do and where the author's intent and the page disagree. Market and process are out of scope. Sections: core problems, specific failures, what's working, what would most improve it, honest assessment.
+
+Used by `/critic:manuscript-craft` and `/critic:delta`.
 
 ### close-read.md
 
-The line-editor and copy-editor framing. Explicit out-of-scope rules (no plot, no scene structure, no character arc; those belong to `/critic:manuscript`). Five categories: TYPO, PROSE, STRUCTURE (micro), CANON, STYLE. Voice-preservation rules and the when-in-doubt-describe-don't-draft principle. Output format (quote-and-fix, category-grouped, ordered by appearance).
+The line-editor and copy-editor framing. Explicit out-of-scope rules (no plot, no scene structure, no character arc; those belong to the manuscript reviews). Five categories: TYPO, PROSE, STRUCTURE (micro), CANON, STYLE. Voice-preservation rules and the when-in-doubt-describe-don't-draft principle. Output format (quote-and-fix, category-grouped, ordered by appearance).
 
-Used by `/critic:close-read`. This is the opposite role from the publishing-consultant reviewers. The framing tells the subagent to flag surface issues that the other reviewers are told to ignore.
+Used by `/critic:close-read`. This is the opposite role from the manuscript reviewers in either frame. The framing tells the subagent to flag surface issues that the other reviewers are told to ignore.
 
 ### extract-slice.md
 
@@ -113,12 +179,19 @@ Used by `/critic:downstream`.
 
 ## How prompts compose
 
-The skills compose prompts by concatenation. A typical manuscript-review system prompt is:
+The skills compose prompts by concatenation. A publication-frame manuscript-review system prompt is:
 
 ```
 get-prompt("agent-framing.md", vault: <vault>)
 + get-prompt("manuscript.md", vault: <vault>)
 + get-prompt("verdict.md", vault: <vault>)
+```
+
+The craft-frame equivalent swaps all three files. A delta-review system prompt is:
+
+```
+get-prompt("craft-framing.md", vault: <vault>)
++ get-prompt("delta.md", vault: <vault>, vars: {MaxIssues: 7})
 ```
 
 A typical chapter-review system prompt for the analytical role is:
@@ -146,7 +219,7 @@ A few useful per-project overrides.
 
 The `stage.md` at the vault root overrides the auto-derived stage block. Not a prompt template per se. Loaded by `read-stage` directly. Use this when the auto-derived block is too generic for your project's actual situation.
 
-An override at `<vault>/prompts/agent-framing.md` gives reviewers a different role. If you want reviewers to act as line editors instead of publishing consultants, this is the lever (though `/critic:close-read` already exists for that role).
+An override at `<vault>/prompts/agent-framing.md` or `<vault>/prompts/craft-framing.md` gives reviewers a different role. Before overriding, check whether the other frame already says what you want; switching `frame` is cheaper than maintaining a prompt.
 
 An override at `<vault>/prompts/verdict.md` lets you use different verdict labels or extra fields. If you want a fifth label or a different rubric, change it here.
 

@@ -11,7 +11,7 @@
       "name": "critic",
       "source": "./critic",
       "description": "Multi-agent fiction review system with Claude, Codex, and Pi reviewers",
-      "version": "0.4.0"
+      "version": "0.5.0"
     }
   ]
 }

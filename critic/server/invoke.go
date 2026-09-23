@@ -14,27 +14,27 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// appendManuscript loads the storyline manuscript at `vaultPath` and appends
-// it to userPrompt under a clear marker. On any error, returns the prompt
-// unchanged so callers see the underlying issue at the operation level rather
-// than silently failing on prompt assembly.
-func appendManuscript(userPrompt, vaultPath string) string {
+// appendManuscript assembles the manuscript at `vaultPath` and appends it to
+// userPrompt under a clear marker. A failure is an error, not a no-op: a
+// reviewer handed the prompt without the book still answers, confidently,
+// about nothing.
+func appendManuscript(userPrompt, vaultPath string) (string, error) {
 	if vaultPath == "" {
-		return userPrompt
+		return userPrompt, nil
 	}
 	v, err := vault.New(vaultPath)
 	if err != nil {
-		return userPrompt
+		return "", fmt.Errorf("include_manuscript_from: %w", err)
 	}
 	manuscript, err := v.ReadManuscript()
-	if err != nil || strings.TrimSpace(manuscript) == "" {
-		return userPrompt
+	if err != nil {
+		return "", fmt.Errorf("include_manuscript_from: %w", err)
 	}
 	var b strings.Builder
 	b.WriteString(userPrompt)
 	b.WriteString("\n\n=== MANUSCRIPT ===\n\n")
 	b.WriteString(manuscript)
-	return b.String()
+	return b.String(), nil
 }
 
 func optString(req mcp.CallToolRequest, key string) string {
@@ -131,7 +131,10 @@ func makeInvokeClaudeHandler(c *agent.Claude, js *Jobs) server.ToolHandlerFunc {
 		systemPrompt, _ := req.RequireString("system_prompt")
 		userPrompt, _ := req.RequireString("user_prompt")
 		sessionID := optString(req, "session_id")
-		userPrompt = appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		userPrompt, err := appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		return runInvocation(ctx, req, js, "claude", func(ctx context.Context) (string, string, error) {
 			if sessionID != "" {
@@ -148,7 +151,10 @@ func makeInvokeCodexHandler(c *agent.Codex, js *Jobs) server.ToolHandlerFunc {
 		systemPrompt, _ := req.RequireString("system_prompt")
 		userPrompt, _ := req.RequireString("user_prompt")
 		sessionID := optString(req, "session_id")
-		userPrompt = appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		userPrompt, err := appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		return runInvocation(ctx, req, js, "codex", func(ctx context.Context) (string, string, error) {
 			if sessionID != "" {
@@ -167,7 +173,10 @@ func makeInvokePiHandler(p *agent.Pi, js *Jobs) server.ToolHandlerFunc {
 		sessionID := optString(req, "session_id")
 		provider := optString(req, "provider")
 		model := optString(req, "model")
-		userPrompt = appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		userPrompt, err := appendManuscript(userPrompt, optString(req, "include_manuscript_from"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		return runInvocation(ctx, req, js, "pi", func(ctx context.Context) (string, string, error) {
 			if sessionID != "" {

@@ -20,9 +20,9 @@ server/
     embed.go           //go:embed *.md + template rendering
     *.md               embedded prompt templates
   vault/
-    vault.go           project + scenes + Codex + Research + stage
+    vault.go           book note + chapters + scenes + Codex + Research + stage
     review.go          reviews + issues + snapshots + summaries
-    vault_smoke_test.go    end-to-end test against a real storyline vault
+    vault_test.go      fixture tests for the vault layer
 ```
 
 Build:
@@ -36,38 +36,42 @@ The binary serves MCP over stdio.
 
 ## Vault layer
 
-`server/vault/` is the only package that knows about the storyline file layout. Two files.
+`server/vault/` is the only package that knows the file layout. Two files. See [vault.md](vault.md) for the layout itself.
 
 ### vault.go
 
-Opening a vault is project discovery. Scan the root for a `<Title>.md` file with `type: storyline` frontmatter, derive the base folder, store the project file path:
+Opening a vault checks for a `Story/` folder and nothing else:
 
 ```go
-v, err := vault.New(root)  // returns *Vault or an error if 0 or >1 project files
+v, err := vault.New(root)  // error if root isn't a directory or has no Story/
 ```
 
 The Vault struct exposes:
 
 | Method | Returns | What it does |
 |--------|---------|--------------|
-| `ReadProject()` | `*Project` | Parses `<Title>.md` frontmatter: title, defined acts/chapters, labels, descriptions. |
-| `ReadScenes()` | `[]Scene` | Walks `Scenes/`, parses frontmatter, sorts by act/chapter/sequence. |
-| `AssembleManuscript(p, scenes)` | `string` | Emits the storyline plugin's manuscript export format byte-for-byte. |
-| `ReadManuscript()` | `string` | Convenience: ReadProject + ReadScenes + AssembleManuscript. |
-| `RenderChapter(p, n, scenes)` | `string` | One chapter, with `### Chapter N: <label>` and per-scene `#### <title>` headings. |
+| `ReadBook()` | `*Book` | The root-level note with `type: book`: title, act labels, description. Falls back to the folder name. |
+| `ReadChapters()` | `[]Chapter` | Parses every chapter file in `Story/`, splits scenes on `## ` headings, pairs them with `scenes:` metadata, sorts by chapter number. Errors on duplicate numbers. |
+| `AssembleManuscript(b, chapters)` | `string` | `# Title`, `## Act N`, `### Chapter N`, `#### <scene>`, prose. |
+| `ReadManuscript()` | `string` | ReadBook + ReadChapters + AssembleManuscript. Errors on an empty `Story/`. |
+| `RenderChapter(ch)` | `string` | One chapter with its heading, any preamble, and each scene. |
 | `RenderScene(s)` | `string` | One scene as `#### <title>\n\n<body>`. |
-| `ReadResearchFiles()` | `map[path]content` | Every `.md` under `Research/`. |
-| `ListCodexEntries()` | `[]string` | Filenames (no `.md`) of every Codex entry. |
-| `ReadCodexEntry(name)` | `string` | One entry's content. Searches Characters/ then Locations/. |
+| `FindChapter(chapters, n)` | `*Chapter` | Chapter by number. |
+| `FindScene(chapters, ref)` | `*Scene` | Scene by `CC-SS` (also `4.2`, `4-2`, a trailing title) or exact title. Errors on an ambiguous title. |
+| `AllScenes(chapters)` | `[]Scene` | Scenes in manuscript order. |
+| `ReadResearchFiles()` | `map[path]content` | Every `.md` under `Background/` except `Characters/` and `Locations/`. |
+| `ListCodexEntries()` | `[]string` | File names (no `.md`) under `Background/Characters/` and `Background/Locations/`. |
+| `ReadCodexEntry(name)` | `string` | One entry. Searches Characters/ then Locations/. |
 | `ReadCodexEntries(names)` | `map[path]content` | Filtered to `names`; pass nil for all. |
-| `SceneEntityNames(scenes)` | `[]string` | Union of POV, characters, location across scenes. |
-| `ReadStyleGuide()` | `string` | `style.md` or `""` (the server's `read-style-guide` tool checks Research/style.md as fallback). |
+| `SceneEntityNames(scenes)` / `ChapterEntityNames(ch)` | `[]string` | Union of POV, characters, locations. |
+| `ReadStyleGuide()` | `string` | `style.md`, then `Background/style.md`, else `""`. |
 | `ReadStage()` | `string` | `stage.md` or `""`. |
-| `DerivedStage(p, scenes)` | `string` | Synthesised stage block from project + scene metadata. |
+| `DerivedStage(b, chapters)` | `string` | Stage block from the book note and chapters. |
+| `ChapterWordCount(ch)` | `int` | Prose words, computed on every call. |
 
-Wikilinks are stripped consistently. `[[Name]]` becomes `Name`. `[[Path/To/Name]]` becomes `Name`. `[[Name|Alias]]` becomes `Alias`. `[[Name#heading]]` becomes `Name`.
+Wikilinks are stripped from prose. `[[Name]]` becomes `Name`. `[[Path/To/Name]]` becomes `Name`. `[[Name|Alias]]` becomes `Alias`. Frontmatter wikilinks are cleaned the same way, and `[[Name#heading]]` becomes `Name`.
 
-YAML frontmatter is parsed with `gopkg.in/yaml.v3`. Coercion helpers handle the storyline plugin's tolerance for int-vs-string-valued fields (both `act: 1` and `act: "1"` work).
+YAML frontmatter is parsed with `gopkg.in/yaml.v3`. Coercion helpers accept int-or-string fields (`chapter: 4` and `chapter: "4"` both work) and int-keyed maps (`acts: {1: The Rim}` decodes as `map[any]any`).
 
 ### review.go
 
@@ -75,53 +79,61 @@ Review files, issues, snapshots, summaries, reviewer memory.
 
 | Method | What it does |
 |--------|--------------|
-| `WriteReview(prefix, content)` | Write `review/NNN-prefix-timestamp.md` with the next global counter. |
-| `NextReviewNumber()` | Scan `review/` for the highest `NNN-` prefix; return next. |
+| `WriteReview(prefix, content)` | Write `Review/NNN-prefix-timestamp.md` with the next global counter. |
+| `NextReviewNumber()` | Scan `Review/` for the highest `NNN-` prefix; return next. |
 | `ReadLatestReview(prefix)` | Most recent review file containing the prefix. |
 | `ReadLatestReviewSynthesis(prefix)` | Same, but cut at the sentinel. |
 | `ReadReviewByNumber(n)` | Load a review by its global number. |
-| `WriteStagedPart(name, content)` | Write to `review/.staging/`. |
+| `WriteStagedPart(name, content)` | Write to `Review/.staging/`. |
 | `AssembleReview(prefix, synthesisKey, partKeys)` | Combine staged parts into a final review with the sentinel. Cleans staging. |
 | `WriteReviewFile(filename, content)` | Overwrite a review file by name (used by `add-rebuttal`). |
 | `ReadIssues()` / `AppendIssue(heading, entry)` | `issues.md` management. |
 | `WriteSummary(name, content)` | Per-chapter summary writes. |
-| `WriteSnapshot(prefix)` | Assemble manuscript, write to `.snapshots/`, return (path, prior_path). |
-| `SnapshotAndDiff(prefix)` | Write snapshot + compute diff against prior + save paired `.diff` file. Returns all four paths plus diff text. |
+| `WriteSnapshot(meta)` | Assemble manuscript, write `.snapshots/<lineage>-<ts>.md` plus a `.json` sidecar with the `SnapshotMeta` (lineage, kind, review, created), return (path, prior_path). The prior is the newest snapshot in the same lineage, skipping orphans (see below). |
+| `SnapshotAndDiff(meta)` | `WriteSnapshot` + unified diff against the prior + paired `.diff` file. Returns all four paths plus diff text. |
+| `ListSnapshots(lineage)` | Every snapshot, oldest first, with its meta and diff path; `lineage` filters, `""` lists all. |
 | `DiffSnapshots(prior, current)` | Unified diff via `diff -u`. |
+| `ChangedScenes(prior, current)` | Compare two assembled manuscripts scene by scene. Returns a `ChangeSet`: one `SceneChange` (chapter, scene, added/modified/removed, word counts) per differing scene, plus the full text of the added and modified scenes under their headings. |
+| `SnapshotChanges(prior, current)` | `ChangedScenes` over two snapshot files. |
 
-Snapshots use the storyline plugin's export format because `WriteSnapshot` calls `ReadManuscript`. Diffs are therefore against meaningful structure (`### Chapter 3:` headers move when you reorder; `#### scene title` headers track scenes).
+`WriteSnapshot` calls `ReadManuscript`, so a snapshot is exactly what reviewers see. Diffs track meaningful structure: `### Chapter 3:` headers move when you reorder chapters; `#### scene title` headers track scenes.
+
+Snapshots are grouped by lineage. A review diffs only against the newest snapshot in its own lineage: craft against craft, publication against publication, never across. The lineage is in the file name and the sidecar; a snapshot with no sidecar (from before lineages existed) is named `manuscript-*` and reads as publication. Lineage names are lowercase letters, digits, and hyphens; `manuscript` is refused as a lineage name because it's the legacy alias. A prior snapshot whose sidecar records the same or a later review number than the one being written is the orphan of a run that died before assembling its review, and is skipped.
+
+`ChangedScenes` parses that same shape back into sections keyed by chapter number, scene title, and occurrence, and compares bodies. Text between a chapter heading and its first scene heading is the chapter preamble (or its single untitled scene) and is keyed with an empty title. Act and title headings belong to no scene, so relabelling an act is not a scene change. A retitled scene reads as removed plus added; there's no rename detection, and none is needed for pointing a reviewer at what changed.
 
 ## MCP tools
 
-All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path to the storyline project base) except `pi-list-models`, `get-prompt`, and the settings tools.
+All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path to the book folder, the one containing `Story/`) except `pi-list-models`, `get-prompt`, and the settings tools.
 
 ### Manuscript and slice assembly
 
 | Tool | Purpose |
 |------|---------|
-| `assemble-manuscript` | Return the full manuscript in plugin export format. Used to inline the manuscript for Claude subagents. (Codex and Pi get it via `include_manuscript_from` on their invoke calls.) |
-| `assemble-chapter(chapter)` | Return JSON `{text, entities, scene_count}` for one chapter. |
-| `read-scene(scene)` | Return JSON `{text, entities, act, chapter, sequence, title}` for one scene. |
-| `list-scenes` | Return one line per scene: `<act>/<chapter>/<sequence> | <filename> | <title>`, in manuscript order. |
+| `assemble-manuscript` | Return the full manuscript, assembled from `Story/`. Used to inline the manuscript for Claude subagents. (Codex and Pi get it via `include_manuscript_from` on their invoke calls.) |
+| `assemble-chapter(chapter)` | Return JSON `{text, entities, scene_count, title, file}` for one chapter. |
+| `read-scene(scene)` | Return JSON `{id, chapter, scene, chapter_title, title, text, entities}` for one scene. `scene` is `CC-SS` or an exact title. |
+| `list-chapters` | One line per chapter: `<n> \| <file> \| <title> \| <scenes> \| <words> \| <status>`. |
+| `list-scenes` | One line per scene: `<CC-SS> \| <chapter file> \| <title>`, in manuscript order. |
 
 ### Context blocks
 
 | Tool | Purpose |
 |------|---------|
 | `read-stage` | Return `stage.md` if present, else the auto-derived stage block. |
-| `read-style-guide` | Return `style.md` if present, falling back to `Research/style.md`. |
-| `read-research` | Concatenate every `.md` under `Research/` with `### <relpath>` headers. |
-| `read-codex(names?)` | Concatenate Codex entries (Characters + Locations) with `### <relpath>` headers. Pass `names` as comma-separated entity names to filter; omit for all. |
+| `read-style-guide` | Return `style.md` if present, falling back to `Background/style.md`. |
+| `read-research` | Concatenate the worldbuilding docs (every `.md` under `Background/` except the Codex folders) with `### <relpath>` headers. |
+| `read-codex(names?)` | Concatenate Codex entries (`Background/Characters` + `Background/Locations`) with `### <relpath>` headers. Pass `names` as comma-separated entity names to filter; omit for all. |
 | `read-codex-entry(name)` | One Codex entry by name. Used for on-demand Claude subagent lookups. |
 | `list-codex-entries` | One entity name per line. Used by `/critic:extract` to give subagents the canonical roster. |
-| `find-entity-mentions(name)` | JSON array of `{filename, act, chapter, sequence, title, body}` for every scene mentioning `name`. Used for `/critic:extract entity` whole-book scans. |
+| `find-entity-mentions(name)` | JSON array of `{id, chapter, scene, title, body}` for every scene mentioning `name`. Used for `/critic:extract entity` whole-book scans. |
 
 ### Reviews and issues
 
 | Tool | Purpose |
 |------|---------|
 | `next-review-number` | Next global review counter (used to compute issue ID prefixes). |
-| `stage-review-part(name, content)` | Write to `review/.staging/<name>`. |
+| `stage-review-part(name, content)` | Write to `Review/.staging/<name>`. |
 | `assemble-review(prefix, synthesis_part, raw_parts)` | Combine staged parts into a final review. Cleans staging. |
 | `save-review(prefix, content)` | Legacy single-shot review write. Prefer stage + assemble for large documents. |
 | `read-issue(issue_id)` | Find the issue block by ID in its source review file. |
@@ -133,9 +145,11 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 
 | Tool | Purpose |
 |------|---------|
-| `snapshot-and-diff(prefix)` | Atomic: write snapshot, locate prior, compute diff, save paired `.diff`. Returns JSON `{snapshot_path, prior_path, diff_path, diff_text}`. |
-| `write-snapshot(prefix)` | Just write the snapshot. |
+| `snapshot-and-diff(lineage, kind?, review?)` | Atomic: write snapshot with sidecar, locate the prior in the lineage, compute diff, save paired `.diff`. Returns JSON `{snapshot_path, prior_path, diff_path, diff_text, changed_scenes, changed_text}`. `changed_scenes` is the scene-level change list; `changed_text` is the full prose of the added and modified scenes. Both are empty when there's nothing to diff. |
+| `write-snapshot(lineage, kind?, review?)` | Just write the snapshot and sidecar. |
+| `list-snapshots(lineage?)` | JSON `[{path, diff_path, lineage, kind, review, created}]`, oldest first. |
 | `diff-snapshots(prior, current)` | Unified diff between two snapshot files. |
+| `changed-scenes(prior, current)` | Scene-level comparison of two snapshot files. Returns JSON `{scenes: [{chapter, scene, change, words_before, words_after}], text}`. |
 
 ### Invokes
 
@@ -153,7 +167,7 @@ All tools live in `main.go`. Every tool takes a `vault` parameter (absolute path
 | Tool | Purpose |
 |------|---------|
 | `read-settings` | Current settings JSON. |
-| `write-setting(key, value)` | Update one setting. |
+| `write-setting(key, value)` | Update one setting. Keys are whitelisted (see `/critic:settings`); `frame` must be `craft` or `publication`. |
 | `update-memory` | Legacy reviewer-memory hook. Not currently used by any skill. |
 
 ## Long invocations
@@ -220,26 +234,23 @@ Persistent settings live in `${CLAUDE_PLUGIN_DATA}/settings.json`. `config.yaml`
 
 ## Testing
 
-`vault/vault_smoke_test.go` is an integration test that opens the Noblesse Oblige storyline vault (skipped if not on disk) and exercises:
+`vault/vault_test.go` builds a small book in a temp directory and covers:
 
-- Project discovery and frontmatter parsing
-- Scene loading and sort order
-- Manuscript assembly format (matches storyline export)
-- Wikilink stripping in scene bodies
-- Codex filtering by entity name
-- Research file walking
-- Derived stage block contents
-- Entity name union across scenes
-- RenderChapter and RenderScene output
+- `Story/` as the one hard requirement, and book-note discovery with its fallbacks
+- Chapter numbering from frontmatter or file name, and the duplicate-number error
+- Scene splitting: `## ` starts a scene, `###` and `---` stay in the prose, a headingless chapter is one scene, text above the first heading is a preamble
+- Scene metadata pairing by title when the body is reordered
+- The exact assembled manuscript, including act and chapter headings and wikilink stripping
+- Scene lookup by `CC-SS`, shorthand, old filename, and title, including the ambiguous-title error
+- Codex and Research reads from `Background/`, and the style-guide fallback
+- Review numbering, staged assembly, and snapshot paths under `Review/`
 
-Run with:
+`jobs_test.go` covers the invocation job runner.
 
 ```bash
 cd critic/server
-go test ./vault/ -run TestStorylineVaultSmoke
+go test ./...
 ```
-
-This is the only test currently in the codebase. New test cases should live next to it.
 
 ## What the server isn't
 

@@ -2,15 +2,101 @@
 
 Every `/critic:*` command in detail. Skills live in `critic/skills/<name>/SKILL.md`. Claude reads them when you invoke the command.
 
-## /critic:manuscript
+## Frames
 
-Full manuscript review with interactive setup. The heaviest workflow. Three reviewers in parallel, optional adversary, cross-review matrix, synthesis, save.
+Two sets of prompts decide what reviewers measure against. The publication frame advises a literary agent and judges the foundations against a saleable finished book; prior issues are tracked across reviews. The craft frame advises the author's developmental editor and judges the pages against the author's stated intent; market, pace, and the ledger of prior issues are out of scope. Both keep the reviewer at arm's length from the author.
+
+The two manuscript skills are named by frame. `/critic:delta`, `/critic:review`, `/critic:downstream`, and `/critic:consult` take the frame from the `frame` setting (default `publication`).
+
+---
+
+## /critic:delta
+
+Iterative review of the changes since the last manuscript-level review. The full manuscript is context; the scenes the author added or modified are the target. Non-interactive.
 
 ### Invocation
 
 ```
-/critic:manuscript
-/critic:manuscript tightened the chapter 4 scene; added the chapel scene to give Byrne some interiority
+/critic:delta
+/critic:delta gave Luma a decision in the Geneva scene instead of another summons
+/critic:delta trying to answer ISSUE-008-03; the railgun report is now on the table between them
+```
+
+$ARGUMENTS is the author's note: what this round of changes was trying to do. Reviewers assess the changes against it. If the note cites issue IDs, those issue blocks (and only those) are pulled from the prior reviews and shown to reviewers. Without a note, reviewers judge the changes on their merits.
+
+### Workflow
+
+1. `next-review-number`.
+2. `snapshot-and-diff(lineage: <frame>, kind: "delta-<frame>", review: N)`. The lineage is the frame (`craft` by default), so a craft delta diffs only against craft snapshots. If the lineage has no prior snapshot, this run is its baseline: say so and stop. If nothing changed, say so and stop. Otherwise hold `changed_scenes` (one line per added, modified, or removed scene with word counts) and `changed_text` (the full prose of the added and modified scenes).
+3. Context: `read-stage`, `read-style-guide`, `read-issues`, plus `read-issue` for any IDs the note cites.
+4. Prompts by frame. Craft: `craft-framing.md` + `delta.md`; rejection `rejection-pass-craft.md`; frank reader `adversarial-craft.md` with a bridging paragraph scoping it to the changes; synthesis `craft-framing.md` + `synthesis-delta.md`. Publication swaps in `agent-framing.md`, `rejection-pass.md`, `adversarial.md`.
+5. User prompt: stage, style, known issues, referenced prior issues, changed scenes, author's note, changed material. The manuscript is appended server-side (`include_manuscript_from`) or inlined for the Claude subagent.
+6. Reviews in parallel: Claude subagent (review plus rejection pass), Codex if enabled, Pi if enabled, frank reader if Pi is enabled (using `adversary_provider` / `adversary_model` when set).
+7. Cross-review, full matrix.
+8. Synthesis with `synthesis-delta.md`: the intent, did it land, on its own merits, what it cost, issues with IDs, strengths, open questions, and a verdict on the changes (landed / partly / didn't; new material above / at / below the manuscript's best; fix first; protect).
+9. Stage and assemble with prefix `delta-<frame>`.
+
+### Output
+
+```
+Review/NNN-delta-craft-YYYY-MM-DD-HHMMSS.md
+Review/NNN-delta-publication-YYYY-MM-DD-HHMMSS.md
+```
+
+### When to use
+
+After a burst of drafting or revision. Between full manuscript passes. Whenever the question is "did this round do what I meant, and is it good".
+
+---
+
+## /critic:manuscript-craft
+
+Whole-manuscript review in the craft frame. Interactive setup, then straight through.
+
+### Invocation
+
+```
+/critic:manuscript-craft
+/critic:manuscript-craft new chapters 13 and 14; the act turn is on the page now
+```
+
+$ARGUMENTS is the author's note for this review, as with `/critic:delta`.
+
+### What differs from the publication frame
+
+Prompts: `craft-framing.md`, `manuscript-craft.md`, `verdict-craft.md`, `rejection-pass-craft.md`, `adversarial-craft.md`, `synthesis-craft.md`. `cross-review.md` is shared.
+
+The prior review is loaded as context, not as a checklist: reviewers are told an unaddressed issue is the author's sequencing decision, and that they must not count cycles, cite prior IDs, or report what was or wasn't addressed. If an old problem still matters, they state it fresh.
+
+When there are changes since the last review, the review and the synthesis open with a section on them (intent, landed, merits, cost) before the whole-book sections. The verdict adds two lines for the changes.
+
+The prior review it loads is the latest `manuscript-craft` or `delta-craft` review. It snapshots into the `craft` lineage and diffs only against craft snapshots. Publication-frame reviews and snapshots are never used, so the first craft review after a run of publication reviews has no prior and establishes the craft baseline.
+
+### Phases
+
+Phase A asks four questions: which reviewers, the Pi model, the frank reader's model, which steps. Phase B is the same pipeline as the publication skill: prior review, review number, snapshot and diff, system prompt, user prompt, parallel reviews with a rejection pass, cross-review matrix, synthesis, stage, assemble, present. Reviewer failure stops the run.
+
+### Output
+
+```
+Review/NNN-manuscript-craft-YYYY-MM-DD-HHMMSS.md
+```
+
+### When to use
+
+Once an act, or whenever a whole-book read is wanted after several deltas.
+
+---
+
+## /critic:manuscript-publication
+
+Whole-manuscript review in the publication frame. The original manuscript skill, renamed. Three reviewers in parallel, optional adversary, cross-review matrix, synthesis, save.
+
+### Invocation
+
+```
+/critic:manuscript-publication
+/critic:manuscript-publication tightened the chapter 4 scene; added the chapel scene to give Byrne some interiority
 ```
 
 If $ARGUMENTS is non-empty, it's treated as an author's note for this review: what the author was trying to do with the changes since the last review. The note is injected near the diff summary and reviewers are told to assess whether the intent was achieved.
@@ -33,11 +119,11 @@ The skill runs straight through, with one exception: if any enabled reviewer inv
 
 The steps:
 
-B1. Load the prior review's synthesis (above the sentinel), if step enabled.
+B1. Load the prior review's synthesis (above the sentinel), if step enabled. Publication lineage only: the latest `manuscript-critic` or `delta-publication` review.
 
 B2. Get the next review number via `next-review-number`.
 
-B3. `snapshot-and-diff` writes a fresh manuscript snapshot (assembled in plugin export format) and computes a diff against the prior snapshot. If a diff exists, the orchestrator summarises it into a few sentences per affected chapter.
+B3. `snapshot-and-diff(lineage: "publication", kind: "manuscript-critic", review: N)` writes a fresh manuscript snapshot (assembled in plugin export format) and computes a diff against the prior publication snapshot; `manuscript-*` snapshots from before lineages existed count as publication. If a diff exists, the orchestrator summarises it into a few sentences per affected chapter, using the tool's `changed_scenes` list to keep the summary accurate.
 
 B4. Compose the manuscript-review system prompt: `agent-framing.md` + `manuscript.md` + `verdict.md`.
 
@@ -45,7 +131,7 @@ B5. Build the user prompt prefix: stage, style, known-issues, prior-review-summa
 
 B6. Independent reviews in parallel. Claude subagent does review plus rejection pass in one shot (true context continuity). Codex and Pi are invoked with `include_manuscript_from` so the server appends the manuscript text. Pi adversary runs in the same parallel turn with the adversarial system prompt.
 
-B7. Cross-review matrix. Each reviewer sees both counterparts' reviews and produces a rebuttal. Codex and Pi sessions resume; the Claude subagent gets its own prior review inlined for continuity.
+B7. Cross-review matrix. Each reviewer sees the others' reviews and produces a rebuttal. Codex and Pi sessions resume; the Claude subagent gets its own prior review inlined for continuity.
 
 B8. Synthesis subagent produces the ranked-issue report with `ISSUE-NNN-NN` IDs.
 
@@ -58,18 +144,20 @@ B11. Present the synthesis, the saved file path, and call out the rejection pass
 ### Output
 
 ```
-review/NNN-manuscript-critic-YYYY-MM-DD-HHMMSS.md
+Review/NNN-manuscript-critic-YYYY-MM-DD-HHMMSS.md
 ```
+
+The `manuscript-critic` prefix is kept so older publication-frame reviews sort with new ones.
 
 ### When to use
 
-For revision passes. After significant changes to multiple chapters. As a quarterly checkpoint on draft health.
+When a publisher or agent is in the picture and the question is whether the foundations will carry a saleable book.
 
 ---
 
 ## /critic:review
 
-Four-role review (analytical, immersive, structural, adversarial) scoped to one chapter or one scene. Same shape as manuscript, narrower scope, no interactive setup.
+Four-role review (analytical, immersive, structural, adversarial) scoped to one chapter or one scene. Same shape as the manuscript reviews, narrower scope, no interactive setup. The framing, synthesis, and verdict prompts come from the `frame` setting.
 
 ### Invocation
 
@@ -84,7 +172,7 @@ Four-role review (analytical, immersive, structural, adversarial) scoped to one 
 
 1. Fetch the slice. `assemble-chapter` for chapter mode, `read-scene` for scene mode. Both return text plus the entity union from frontmatter.
 2. Gather context in parallel: `read-stage`, `read-style-guide`, `read-research`, `read-codex(names: <slice entities>)`, `read-issues`.
-3. Compose four system prompts, one per role. Each is `agent-framing` + `review-base` (templated with `Role` and `MaxIssues`) + `review-<role>` + `verdict`.
+3. Compose four system prompts, one per role. Each is the frame's framing prompt + `review-base` (templated with `Role` and `MaxIssues`) + `review-<role>` + the frame's verdict prompt.
 4. Build user prompt with stage, style, research, codex, known issues, target slice.
 5. Run four reviewers in parallel. Analytical to Claude subagent. Immersive to Codex. Structural to Claude subagent. Adversarial to Pi.
 6. Pairwise cross-review. Analytical against immersive (text-only pair). Structural against adversarial (full-context pair).
@@ -95,8 +183,8 @@ Four-role review (analytical, immersive, structural, adversarial) scoped to one 
 ### Output
 
 ```
-review/NNN-chapter-<N>-review-YYYY-MM-DD-HHMMSS.md
-review/NNN-scene-<slug>-review-YYYY-MM-DD-HHMMSS.md
+Review/NNN-chapter-<N>-review-YYYY-MM-DD-HHMMSS.md
+Review/NNN-scene-<CC-SS>-<slug>-review-YYYY-MM-DD-HHMMSS.md
 ```
 
 ### When to use
@@ -107,7 +195,7 @@ After drafting a chapter or scene, before moving on. When the manuscript review 
 
 ## /critic:close-read
 
-Line-editor and copy-editor pass. Subagent per scene. Quote-and-fix output covering typos, prose-level issues, micro-structure, canon adherence, style. This is the opposite role from `/critic:manuscript` and `/critic:review`. The manuscript reviewers are told not to flag typos. Close-read is the typo and prose-level pass.
+Line-editor and copy-editor pass. Subagent per scene. Quote-and-fix output covering typos, prose-level issues, micro-structure, canon adherence, style. This is the opposite role from the manuscript reviews, `/critic:delta`, and `/critic:review`. The manuscript reviewers are told not to flag typos. Close-read is the typo and prose-level pass.
 
 ### Invocation
 
@@ -121,16 +209,16 @@ Line-editor and copy-editor pass. Subagent per scene. Quote-and-fix output cover
 ### Workflow
 
 1. Enumerate scenes based on mode.
-2. Set up the run. Generate a timestamp run ID, create `<vault>/review/close-read/<run-id>/`, load `style.md` and the close-read system prompt once.
+2. Set up the run. Generate a timestamp run ID, create `<vault>/Review/close-read/<run-id>/`, load `style.md` and the close-read system prompt once.
 3. Spawn subagents. `scene` mode spawns one. `chapter` mode spawns all chapter scenes in parallel. `all` mode runs waves of 8 in parallel, writing each wave's files before starting the next. Each subagent gets: scene text, style guide, Codex entries for that scene's frontmatter entities, and the `read-codex-entry` tool for ad-hoc lookups.
-4. Write per-scene files to `<vault>/review/close-read/<run-id>/<act>-<chapter>-<seq>-<scene-slug>.md`.
+4. Write per-scene files to `<vault>/Review/close-read/<run-id>/<CC-SS>-<scene-slug>.md`.
 5. Write `index.md` linking each report with a one-line summary.
 6. Present the aggregate counts and any canon contradictions. Those need editor attention, not just author preference.
 
 ### Output
 
 ```
-review/close-read/<run-id>/
+Review/close-read/<run-id>/
   index.md
   01-01-01-Epigraph.md
   01-01-02-Customs-at-Fontenoy.md
@@ -162,10 +250,10 @@ After editing a chapter or scene, assess what breaks in everything that comes af
 
 ### Workflow
 
-1. Determine the slice and downstream. `list-scenes` enumerates. The slice is either chapter N or one scene file. Downstream is every scene that sorts after the edit point.
+1. Determine the slice and downstream. `list-scenes` enumerates. The slice is either chapter N or one scene (`CC-SS`). Downstream is the rest of the scene's chapter plus every later chapter.
 2. Pull grounding context: style, research, codex.
-3. Fetch the edit-point text and the downstream scenes (`read-scene` in batches of 8, concatenated with `## Act A, Ch C, Seq S` headers between).
-4. Compose prompts: `agent-framing` + `downstream.md`. User prompt has style, research, codex, edited slice, downstream scenes.
+3. Fetch the edit-point text and the downstream text: `read-scene` for later scenes in the same chapter, `assemble-chapter` for every later chapter, in batches of 8, concatenated in manuscript order.
+4. Compose prompts: the frame's framing prompt + `downstream.md`. User prompt has style, research, codex, edited slice, downstream scenes.
 5. Run a Task subagent.
 6. Present issues grouped by affected scene, in manuscript order, critical first.
 
@@ -214,7 +302,7 @@ The skill always reads `.claude/codex-inventory.md` (treating as empty if absent
 
 ### Output
 
-Either `<vault>/Codex/Characters/<Name>.md` or `<vault>/Codex/Locations/<Name>.md`, created or modified. Plus `<vault>/.claude/codex-inventory.md`, updated.
+Either `<vault>/Background/Characters/<Name>.md` or `<vault>/Background/Locations/<Name>.md`, created or modified. Plus `<vault>/.claude/codex-inventory.md`, updated.
 
 ### When to use
 
@@ -236,7 +324,7 @@ No arguments. Always processes every chapter.
 
 ### Workflow
 
-1. `list-scenes` to enumerate chapters.
+1. `list-chapters` to enumerate chapters.
 2. For each chapter (sequentially), `assemble-chapter` and compose a 200 to 400 word summary covering setting, characters, events, state changes, threads, tone, pacing.
 3. Write to `<vault>/summary/chapter-<NN>.md`. Always overwrite.
 
@@ -267,7 +355,7 @@ Short focused second opinion from Codex and Pi on a narrow question. For situati
 
 ### Workflow
 
-1. Compose a short system prompt: publishing consultant, answer directly, ground in context, quote when relevant, no hedging.
+1. Compose a short system prompt: publishing consultant (publication frame) or consulting reader for the author's editor (craft frame); answer directly, ground in context, quote when relevant, no hedging.
 2. The user prompt has context (the question, plus a passage if needed) inline. If the question needs the full manuscript, the skill uses `include_manuscript_from` instead of inlining.
 3. `invoke-codex` and `invoke-pi` in parallel.
 4. Present both responses labeled by source. Add your own take if useful.
@@ -355,13 +443,16 @@ View and update plugin settings.
 
 | Key | Description |
 |-----|-------------|
-| `vault_path` | Absolute path to the storyline project base folder. |
+| `vault_path` | Absolute path to the book folder (the one containing `Story/`). |
+| `frame` | `craft` or `publication` (default). Frame for `/critic:review`, `/critic:delta`, `/critic:downstream`, `/critic:consult`. |
 | `codex_enabled` | Enable the Codex reviewer (true/false). |
 | `codex_model` | Codex model name (omit to let the CLI pick). |
 | `openai_api_key` | OpenAI API key (omit to use Codex CLI login). |
 | `pi_enabled` | Enable the Pi reviewer (true/false). |
 | `pi_provider` | Default Pi provider: `anthropic`, `openai`, `google`. |
 | `pi_model` | Default Pi model. Skills can override per-call. |
+| `adversary_provider` | Frank reader's Pi provider for `/critic:delta`. Empty = `pi_provider`. |
+| `adversary_model` | Frank reader's Pi model for `/critic:delta`. Empty = `pi_model`. |
 | `claude_enabled` | Enable the `invoke-claude` tool (true/false). |
 | `claude_model` | Model for `invoke-claude`. Empty = CLI default. |
 

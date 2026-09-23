@@ -1,40 +1,51 @@
 ---
 name: review
-description: Chapter- or scene-level multi-agent review. Spawns parallel reviewers (Claude subagents, Codex, Pi) for one chapter or one scene with four role lenses (analytical, immersive, structural, adversarial). Use when the user asks to review a specific chapter or scene. For a full-manuscript review with interactive setup, use /critic:manuscript instead.
+description: Chapter- or scene-level multi-agent review. Spawns parallel reviewers (Claude subagents, Codex, Pi) for one chapter or one scene with four role lenses (analytical, immersive, structural, adversarial). Use when the user asks to review a specific chapter or scene. For a full-manuscript review with interactive setup, use /critic:manuscript-craft or /critic:manuscript-publication; for changes-only review, /critic:delta.
 ---
 
 # Chapter / Scene Review
 
-The vault path is the user's configured storyline project. Call `read-settings` if you don't already know it.
+The vault path is the user's configured book project (the folder containing `Story/`). Call `read-settings` if you don't already know it.
 
 ## $ARGUMENTS: Target slice
 
 Parse the argument:
 
-- `chapter <N>`. Review every scene whose frontmatter `chapter:` equals N, in sequence order. Example: `/critic:review chapter 3`.
-- `scene <filename>`. Review one scene file from `Scenes/`. Filename may be with or without `.md`. Example: `/critic:review scene 01-01 Customs at Fontenoy`.
+- `chapter <N>`. Review chapter N (the file in `Story/` whose `chapter:` is N), all its scenes in order. Example: `/critic:review chapter 3`.
+- `scene <id>`. Review one scene, by its address `CC-SS` (chapter, then position within the chapter) or its exact title. Example: `/critic:review scene 01-01`. Old scene filenames like `01-01 Customs at Fontenoy` still resolve.
 - Bare integer → treat as `chapter <N>`.
 - Anything else → treat as `scene <arg>`.
 
-Hold the parsed mode (`chapter` or `scene`) and target (number or filename) for use below.
+Hold the parsed mode (`chapter` or `scene`) and target (number or scene reference) for use below.
 
 ## Setup
 
-This skill does not prompt. It just runs. If the user wants to customize which reviewers run, they should use `/critic:manuscript` (interactive setup).
+This skill does not prompt. It just runs. If the user wants to customize which reviewers run, they should use `/critic:manuscript-craft` or `/critic:manuscript-publication` (interactive setup).
+
+## Frame
+
+Read `frame` from `read-settings`. It picks the framing, synthesis, and verdict prompts:
+
+| `frame` | framing | synthesis | verdict |
+|---------|---------|-----------|---------|
+| unset or `publication` | `agent-framing.md` | `synthesis.md` | `verdict.md` |
+| `craft` | `craft-framing.md` | `synthesis-craft.md` | `verdict-craft.md` |
+
+The role prompts (`review-base.md`, `review-<role>.md`) and `cross-review.md` are the same in both frames. Hold the three names as `framing_prompt`, `synthesis_prompt`, `verdict_prompt`.
 
 ## Execution
 
 ### 1. Fetch the slice
 
-**Chapter mode**: call `assemble-chapter(vault: <vault>, chapter: <N>)`. Returns JSON `{text, entities, scene_count}`. Hold:
+**Chapter mode**: call `assemble-chapter(vault: <vault>, chapter: <N>)`. Returns JSON `{text, entities, scene_count, title, file}`. Hold:
 - `slice_text` = the assembled chapter markdown
-- `slice_entities` = the union of characters/POV/location names referenced in those scenes' frontmatter
-- `slice_label` = `"Chapter <N>"` (use this in user-facing output)
+- `slice_entities` = the union of POV/character/location names in the chapter's frontmatter
+- `slice_label` = `"Chapter <N>: <title>"`, or `"Chapter <N>"` if untitled (use this in user-facing output)
 
-**Scene mode**: call `read-scene(vault: <vault>, scene: <filename>)`. Returns JSON `{text, entities, act, chapter, sequence, title}`. Hold:
+**Scene mode**: call `read-scene(vault: <vault>, scene: <id>)`. Returns JSON `{id, chapter, scene, chapter_title, title, text, entities}`. Hold:
 - `slice_text` = the scene markdown
 - `slice_entities` = the entities from this one scene
-- `slice_label` = `"Scene: <title>"` (Act <act>, Chapter <chapter>, Sequence <sequence>)
+- `slice_label` = `"Scene <id>: <title>"`
 
 ### 2. Gather context
 
@@ -53,10 +64,10 @@ If a block is empty, skip it in the user prompt (don't emit a header for an empt
 For each role, concatenate:
 
 ```
-get-prompt(name: "agent-framing.md", vault: <vault>)
+get-prompt(name: <framing_prompt>, vault: <vault>)
 + get-prompt(name: "review-base.md", vault: <vault>, vars: {Role: <role>, MaxIssues: 7})
 + get-prompt(name: "review-<role>.md", vault: <vault>)   // analytical / immersive / structural / adversarial-role
-+ get-prompt(name: "verdict.md", vault: <vault>)
++ get-prompt(name: <verdict_prompt>, vault: <vault>)
 ```
 
 Roles:
@@ -121,7 +132,7 @@ Capture as `<role>_rebuttal`.
 `next-review-number(vault: <vault>)` → review number `N`. Pad to 3 digits (e.g. `7 → 007`).
 
 Spawn a `Task` subagent with:
-- System: `get-prompt("agent-framing.md")` + `get-prompt("synthesis.md", vars: {ReviewNum: "<padded>"})` + `get-prompt("verdict.md")`
+- System: `get-prompt(<framing_prompt>)` + `get-prompt(<synthesis_prompt>, vars: {ReviewNum: "<padded>"})` + `get-prompt(<verdict_prompt>)`
 - User: all four reviews + the four rebuttals, each labeled by role.
 
 Capture as `synthesis`.
@@ -142,7 +153,7 @@ Stage every artifact (`stage-review-part`):
 Then assemble:
 
 - Chapter mode: `assemble-review(vault, prefix: "chapter-<N>-review", synthesis_part: "synthesis", raw_parts: "analytical-review,immersive-review,structural-review,adversarial-review,analytical-rebuttal,immersive-rebuttal,structural-rebuttal,adversarial-rebuttal")`
-- Scene mode: prefix = `scene-<filename-without-extension-slugified>-review`. Slugify by replacing spaces with `-` and stripping unsafe characters.
+- Scene mode: prefix = `scene-<id>-<title-slug>-review` (e.g. `scene-04-02-departure-for-arcadia-review`). Slugify the title by lowercasing, replacing spaces with `-`, and stripping characters outside `[a-z0-9-]`.
 
 ### 9. Present
 
@@ -151,6 +162,6 @@ Show the synthesis in conversation. Note the saved file path and the slice label
 ## Notes
 
 - The slice is always inline in the user prompt (no `include_manuscript_from`). Chapter and scene reviews are scoped, not whole-book. The manuscript skill is the one that flags the full manuscript via `include_manuscript_from`.
-- Codex is pre-filtered to entities referenced in the slice's scene frontmatter (POV, characters, location). Reviewers see Henry's character file because Henry's in the scene; they don't see 36 other character files they don't need.
+- Codex is pre-filtered to entities named in the chapter frontmatter for the slice (POV, characters, locations, and each scene's metadata). Reviewers see Henry's character file because Henry's in the scene; they don't see 36 other character files they don't need.
 - Issue IDs use the global counter from `next-review-number`, padded to 3 digits.
 - This is heavy. 4 reviews + 4 rebuttals + synthesis = up to 9 agent calls. For lighter work on a single scene, `/critic:close-read` is the line-editor variant.

@@ -25,8 +25,8 @@ Look for:
 
 For each issue, identify:
 
-- Which downstream scene is affected (use the `Act A, Ch C, Seq S. Title`
-  header from the prompt).
+- Which downstream scene is affected (use the `CC-SS Title` scene ID and
+  heading from the prompt, e.g. `04-02 Departure for Arcadia`).
 - What specifically breaks.
 - What in the edited slice caused it.
 - How severe it is (critical / important / minor).

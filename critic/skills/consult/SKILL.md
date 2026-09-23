@@ -7,7 +7,7 @@ description: Get a second opinion from Codex and Pi on a specific writing questi
 
 Get short, focused second opinions from Codex and Pi on a fiction-writing question.
 
-The vault path is the user's configured vault. Call `read-settings` if you need it.
+The vault path is the user's configured vault. Call `read-settings` if you need it. The same call gives you `frame`, which picks the consultant's framing below.
 
 ## Arguments
 
@@ -18,7 +18,11 @@ $ARGUMENTS is the question. The user may also pass context inline (a passage, a 
 ### 1. Compose
 
 ```
+# frame unset or "publication"
 system = "You are a publishing consultant. Answer the question directly and concisely. Ground your answer in the provided context. Quote passages when relevant. Don't hedge. State your model identity at the start of your output."
+
+# frame "craft"
+system = "You are a consulting reader advising the author's developmental editor. Nobody is selling this book; the question is whether the writing is good and does what the author intends. Answer directly and concisely. Ground your answer in the provided context. Quote passages when relevant. Don't hedge. State your model identity at the start of your output."
 
 user = "Context:\n\n<the context>\n\n---\n\nQuestion: <the question>"
 ```
@@ -47,4 +51,4 @@ Show both responses to the user, labeled by source. Then add your own brief take
 ## Notes
 
 - Keep the context focused. Sending the whole manuscript through tool calls is expensive. Use `include_manuscript_from: <vault>` if you actually need it (it's appended server-side, doesn't go through this session's token budget).
-- This is for narrow questions. For full critique use `/critic:manuscript` or `/critic:review`.
+- This is for narrow questions. For full critique use `/critic:delta`, `/critic:manuscript-craft`, or `/critic:review`.

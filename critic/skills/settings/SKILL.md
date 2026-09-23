@@ -17,6 +17,7 @@ To view current settings:
 
 To update a setting:
 > /critic:settings vault_path /Users/me/obsidian/MyVault/MyNovel
+> /critic:settings frame craft
 > /critic:settings pi_provider google
 > /critic:settings codex_enabled false
 
@@ -24,13 +25,16 @@ To update a setting:
 
 | Setting | Description | Example |
 |---------|-------------|---------|
-| `vault_path` | Absolute path to the storyline project base folder (the folder containing `Scenes/`, `Codex/`, `Research/`, etc.) | `/Users/me/obsidian/MyVault/MyNovel` |
+| `vault_path` | Absolute path to the book project (the folder containing `Story/`, `Background/`, `Review/`) | `/Users/me/obsidian/MyVault/MyNovel` |
+| `frame` | Review frame for `/critic:review`, `/critic:delta`, `/critic:downstream`, and `/critic:consult`: `craft` (consulting reader for the author's editor; no market, no ledger, no process commentary) or `publication` (consultant to a literary agent). Default `publication`. The two manuscript skills are named by frame and ignore this. | `craft` |
 | `codex_enabled` | Enable the Codex reviewer (true/false). Default true. | `true` |
 | `codex_model` | Codex model name (omit to let the Codex CLI pick whatever the active subscription supports) | `gpt-5-codex` |
 | `openai_api_key` | OpenAI API key (omit to use Codex CLI's login) | `sk-...` |
 | `pi_enabled` | Enable the Pi reviewer (true/false). Default true. | `true` |
 | `pi_provider` | Default Pi provider (`anthropic`, `openai`, `google`, etc.) | `google` |
 | `pi_model` | Default Pi model. Skills can override per-call. | `gemini-2.5-pro` |
+| `adversary_provider` | Pi provider for the frank reader / adversary in `/critic:delta`. Empty = same as `pi_provider`. | `openai` |
+| `adversary_model` | Pi model for the frank reader / adversary in `/critic:delta`. Empty = same as `pi_model`. Pick something different from `pi_model` for a second aesthetic. | `gpt-5` |
 | `claude_enabled` | Enable the `invoke-claude` tool (true/false). Default true. | `true` |
 | `claude_model` | Model for `invoke-claude` (alias like `sonnet`/`opus` or full name). Empty = CLI default. | `sonnet` |
 

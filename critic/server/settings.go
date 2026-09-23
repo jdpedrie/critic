@@ -62,13 +62,18 @@ func makeReadSettingsHandler() server.ToolHandlerFunc {
 
 func makeWriteSettingHandler() server.ToolHandlerFunc {
 	validKeys := map[string]bool{
-		"vault_path":     true,
-		"codex_enabled":  true,
-		"codex_model":    true,
-		"openai_api_key": true,
-		"pi_enabled":     true,
-		"pi_provider":    true,
-		"pi_model":       true,
+		"vault_path":         true,
+		"frame":              true,
+		"codex_enabled":      true,
+		"codex_model":        true,
+		"openai_api_key":     true,
+		"pi_enabled":         true,
+		"pi_provider":        true,
+		"pi_model":           true,
+		"adversary_provider": true,
+		"adversary_model":    true,
+		"claude_enabled":     true,
+		"claude_model":       true,
 	}
 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -77,6 +82,9 @@ func makeWriteSettingHandler() server.ToolHandlerFunc {
 
 		if !validKeys[key] {
 			return mcp.NewToolResultError(fmt.Sprintf("unknown setting: %s", key)), nil
+		}
+		if key == "frame" && value != "craft" && value != "publication" {
+			return mcp.NewToolResultError("frame must be \"craft\" or \"publication\""), nil
 		}
 
 		settings, err := readSettings()

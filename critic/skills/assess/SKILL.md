@@ -1,13 +1,13 @@
 ---
 name: assess
-description: Deep-dive investigation of a single review issue against the storyline manuscript. Conversational. Pulls the issue and the relevant scenes, presents findings, and discusses with the user. Use when the user wants to dig into a flagged issue.
+description: Deep-dive investigation of a single review issue against the manuscript. Conversational. Pulls the issue and the relevant scenes, presents findings, and discusses with the user. Use when the user wants to dig into a flagged issue.
 ---
 
 # Assess Issue
 
 Conversational deep-dive on a specific review issue. You do the analysis directly in this session. No separate model call. The user can ask follow-up questions and the conversation continues with full context.
 
-The vault path is the user's configured storyline project. Call `read-settings` if you don't already know it.
+The vault path is the user's configured book project (the folder containing `Story/`). Call `read-settings` if you don't already know it.
 
 ## $ARGUMENTS: Issue ID and optional direction
 
@@ -32,9 +32,10 @@ Pull only what the issue requires. Don't slurp the whole manuscript.
 
 Tools at your disposal:
 
-- `list-scenes(vault: <vault>)`. Enumerate every scene in manuscript order. Cheap. Use first to know what's there.
-- `read-scene(vault: <vault>, scene: <filename>)`. One scene's `#### <title>\n\n<body>` + frontmatter entities.
-- `assemble-chapter(vault: <vault>, chapter: <N>)`. All scenes for one chapter, assembled.
+- `list-chapters(vault: <vault>)`. Every chapter with title, scene count, words, status. Cheap.
+- `list-scenes(vault: <vault>)`. Every scene in manuscript order, as `<id> | <chapter file> | <title>`. Cheap. Use first to know what's there.
+- `read-scene(vault: <vault>, scene: <id>)`. One scene's `#### <title>\n\n<body>` + its entities. `<id>` is `CC-SS` or an exact title.
+- `assemble-chapter(vault: <vault>, chapter: <N>)`. One chapter, all scenes, assembled.
 - `assemble-manuscript(vault: <vault>)`. The entire book. Use only when the issue genuinely spans everything (e.g., a pattern that recurs).
 - `read-codex(vault: <vault>, names: <comma-separated>)`. Codex entries filtered to the entities you care about.
 - `read-codex-entry(vault: <vault>, name: <name>)`. One Codex entry.
@@ -49,7 +50,7 @@ Pick based on the issue type. See Step 3.
 
 - Pull the manuscript (`assemble-manuscript`) or enumerate scenes and pull them in batches.
 - Find every occurrence of the pattern.
-- Quote each with its scene location (act/chapter/sequence/title).
+- Quote each with its scene location (scene ID and title).
 - Be exhaustive. Exhaustiveness is the value you provide.
 
 **Structural issue** (e.g., "passive protagonist", "mishandled arc", "Henry never chooses"):
@@ -75,7 +76,7 @@ Pick based on the issue type. See Step 3.
 
 ### Step 4: Present findings
 
-Present your investigation as readable prose. Quote text. Cite scene locations (`Act 1, Ch 1, Seq 2. Customs at Fontenoy`). Be specific.
+Present your investigation as readable prose. Quote text. Cite scene locations (`01-01 Customs at Fontenoy`). Be specific.
 
 ### Step 5: Discuss
 

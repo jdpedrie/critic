@@ -1,11 +1,11 @@
 ---
 name: extract
-description: Extract canon-relevant facts from the manuscript and reconcile them against the Codex (Characters/Locations) and Research (worldbuilding bibles). Maintains .claude/codex-inventory.md. Three modes. Chapter, scene, entity. Every change requires interactive approval.
+description: Extract canon-relevant facts from the manuscript and reconcile them against the Codex (Background/Characters, Background/Locations) and Research (the worldbuilding docs in Background/). Maintains .claude/codex-inventory.md. Three modes. Chapter, scene, entity. Every change requires interactive approval.
 ---
 
 # Canon Extraction
 
-The vault path is the user's configured storyline project. Call `read-settings` if you don't already know it.
+The vault path is the user's configured book project (the folder containing `Story/`). Call `read-settings` if you don't already know it.
 
 This skill never writes Codex files or the inventory without your approval. Every proposed change is presented; you accept, reject, or edit before anything lands on disk.
 
@@ -14,10 +14,10 @@ This skill never writes Codex files or the inventory without your approval. Ever
 Parse the argument:
 
 - `chapter <N>`. Extract from every scene in chapter N.
-- `scene <filename>`. Extract from one scene (with or without `.md`).
+- `scene <id>`. Extract from one scene, by its address `CC-SS` or its exact title.
 - `entity <name>`. Pick an entity and scan every scene that mentions it across the whole project. The name is matched case-insensitively as a substring against scene body text (so `entity Henry` matches "Henry Nelson"); the skill confirms the exact entity with you before running if the match is ambiguous.
 - Bare integer → `chapter <N>`.
-- Anything else without an explicit prefix → ask the user whether they meant a scene filename or an entity name.
+- Anything else without an explicit prefix → ask the user whether they meant a scene or an entity name.
 
 ## Common preamble (all modes)
 
@@ -32,8 +32,8 @@ These four are independent. Call in parallel.
 
 ### S1. Fetch the slice
 
-- chapter: `assemble-chapter(vault, chapter: <N>)` → `{text, entities, scene_count}`. Set `slice_label = "Chapter <N>"`.
-- scene: `read-scene(vault, scene: <filename>)` → `{text, entities, act, chapter, sequence, title}`. Set `slice_label = "Scene: <title> (Act <a>, Ch <c>, Seq <s>)"`.
+- chapter: `assemble-chapter(vault, chapter: <N>)` → `{text, entities, scene_count, title, file}`. Set `slice_label = "Chapter <N>: <title>"`.
+- scene: `read-scene(vault, scene: <id>)` → `{id, chapter, scene, chapter_title, title, text, entities}`. Set `slice_label = "Scene <id>: <title>"`.
 
 ### S2. Run extraction subagent
 
@@ -75,7 +75,7 @@ Show `extraction_report` to the user in conversation, then walk through the acti
 
 **Inventory updates**. For each proposed row delta:
 
-- Show the delta concisely (`Henry Nelson. Update. Last touched: Act 1, Ch 1, Seq 2; no new pending facts`).
+- Show the delta concisely (`Henry Nelson. Update. Last touched: 01-01 (Customs at Fontenoy); no new pending facts`).
 - Ask: accept / edit / skip.
 - If accepted, edit `<vault>/.claude/codex-inventory.md` in place using `Edit` (find the existing `### <Entity name>:` heading and replace its block; or append a new block under the right kind heading if it's a new entity).
 
@@ -159,7 +159,7 @@ Show the report. Walk through:
 
 **Codex entry**. Show the proposed entry. If a Codex file already exists, show the diff against the current one; otherwise show the full new file. Ask: accept / edit / skip.
 
-If accepted: write to `<vault>/Codex/Characters/<entity_name>.md` or `<vault>/Codex/Locations/<entity_name>.md` (ask the user which folder if it's a new entity and the kind isn't obvious from the extraction).
+If accepted: write to `<vault>/Background/Characters/<entity_name>.md` or `<vault>/Background/Locations/<entity_name>.md` (ask the user which folder if it's a new entity and the kind isn't obvious from the extraction).
 
 **Inventory**. Show the row. Ask: accept / edit / skip. If accepted, edit `.claude/codex-inventory.md`.
 
@@ -185,13 +185,13 @@ Maintained by `/critic:extract`. Re-runs reconcile. Status values:
 
 ### <Entity name>: <status>
 
-- Last touched: Act <A>, Ch <C>, Seq <S> (<scene title>)
+- Last touched: <CC-SS> (<scene title>)
 - Pending facts:
   - <fact 1>
   - <fact 2>
 - Notes: <free text, or none>
 
-(repeat per entity, ordered by first-appearance Act/Chapter/Sequence)
+(repeat per entity, ordered by first appearance, by scene ID)
 
 ## Locations
 ...
@@ -211,7 +211,7 @@ Never silently delete a row marked `intentionally-absent`. Extract can re-sugges
 
 ## Notes
 
-- The Codex (Characters/Locations) is the source of truth for what canon currently says. Research bibles are also canonical but more narrative. The manuscript prose is the source of new facts.
+- The Codex (Background/Characters, Background/Locations) is the source of truth for what canon currently says. The worldbuilding docs elsewhere in Background/ are also canonical but more narrative. The manuscript prose is the source of new facts.
 - The "manuscript wins" rule is per-author-decision. Contradictions flagged by the subagent must be resolved interactively. Don't paper over them.
 - Do not auto-write anything. Every change is presented and approved.
 - This skill does not invoke other reviewers. For a structural review of the slice, the user runs `/critic:review` separately.

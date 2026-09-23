@@ -10,7 +10,7 @@ In the user prompt:
 - `=== EXISTING CODEX ENTRY ===`. The current Codex file for this entity, if any. Cite this when checking what's already canon.
 - `=== RESEARCH (WORLDBUILDING) ===`. Worldbuilding bibles. Also canonical.
 - `=== INVENTORY STATE ===`. The entity's row in `.claude/codex-inventory.md`, if any.
-- `=== MENTIONS ===`. A JSON array of scenes that mention this entity, in manuscript order. Each entry has `filename`, `act`, `chapter`, `sequence`, `title`, and `body`. These are the only sources of new facts.
+- `=== MENTIONS ===`. A JSON array of scenes that mention this entity, in manuscript order. Each entry has `id` (the scene address, `CC-SS`), `chapter`, `scene`, `title`, and `body`. These are the only sources of new facts.
 
 ## What to do
 
@@ -30,14 +30,14 @@ Then produce a consolidated report and a proposed Codex update.
 
 | Scene | What this scene establishes |
 |-------|------------------------------|
-| Act <A>, Ch <C>, Seq <S>: <title> | one-line summary of what's said about the entity here |
+| <CC-SS> <title> | one-line summary of what's said about the entity here |
 | ... | ... |
 
 ## Cumulative facts
 
 Walk through each fact about the entity that the manuscript has now established. Group by kind (appearance, role, history, relationships, speech, behavior, etc.). For each fact:
 
-- <Fact>: status: <New | Confirmed | Contradicted>. > "<quoted passage>" (Act <A>, Ch <C>, Seq <S>).
+- <Fact>: status: <New | Confirmed | Contradicted>. > "<quoted passage>" (<CC-SS>).
   - If contradicted: also cite what Codex/Research says.
 
 ## Contradictions to resolve
@@ -63,7 +63,7 @@ If the existing Codex entry is non-empty, do NOT replace fields the manuscript h
 The row this extraction should write to `.claude/codex-inventory.md`:
 
 - Status: <present | stub | missing>
-- Last touched: Act <A>, Ch <C>, Seq <S> (<scene title>). The last manuscript-order mention
+- Last touched: <CC-SS> (<scene title>). The last manuscript-order mention
 - Pending facts: <list of "new" facts that should be folded into the Codex entry once the author approves>
 - Notes: <flags, e.g., "renamed from X in Ch 5", "intentionally-absent recommended because mentioned only once">
 
