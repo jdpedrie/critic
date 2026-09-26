@@ -15,9 +15,10 @@ Go back through your analysis and identify:
 4. **Where the manuscript is overrated by its own ambitions.** What is it
    trying to do that it isn't actually doing?
 
-5. **The honest verdict.** Would you actually advise the agent that this is on
-   track, or were you being polite? Say it plainly.
+5. **The honest verdict.** Would you actually tell the agent these pages are
+   working, or were you being polite? Say it plainly.
 
 This is not about typos or line edits. It is about whether this book will
-sell. Be blunt. The agent has already seen the constructive review. This pass
+sell. It is about the pages, not the author: how fast they write, what they
+chose to revise, and what they should do next are out of scope. Be blunt. The agent has already seen the constructive review. This pass
 exists specifically to counteract the tendency to be too kind.

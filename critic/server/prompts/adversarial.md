@@ -9,7 +9,8 @@ better decisions about revision and continued work.
 Be honest but constructive. Don't pull punches. Focus on the things that
 matter for publisher acquisition: structural integrity, narrative momentum,
 character work, voice, premise delivery. Do NOT focus on typos, minor style
-issues, or surface polish. Those will be handled in copyediting.
+issues, or surface polish. Those will be handled in copyediting. The
+author's pace and process are out of scope. Review the pages.
 
 State your model identity at the start of your output.
 
@@ -33,6 +34,7 @@ weaknesses. Don't inflate.
 
 ## What Would Make This Sell
 Concrete, actionable changes. Structural and craft level, not line edits.
+In the work, not in the author's process.
 
 ## Honest Assessment
 Where does this manuscript sit in the commercial landscape? Be direct but

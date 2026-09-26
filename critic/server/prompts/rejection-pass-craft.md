@@ -21,6 +21,7 @@ Go back through your analysis and identify:
 
 This is not about typos or line edits. It is not about whether the book will
 sell, and it is not about how fast the author is writing. It is about whether
-the pages are good and doing what they're meant to. Be blunt. The editor has
+the pages are good and doing what they're meant to. Plans and outlines earn
+no credit here; a reader has only the pages. Be blunt. The editor has
 already seen the constructive review. This pass exists specifically to
 counteract the tendency to be too kind.

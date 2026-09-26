@@ -4,7 +4,7 @@ Every `/critic:*` command in detail. Skills live in `critic/skills/<name>/SKILL.
 
 ## Frames
 
-Two sets of prompts decide what reviewers measure against. The publication frame advises a literary agent and judges the foundations against a saleable finished book; prior issues are tracked across reviews. The craft frame advises the author's developmental editor and judges the pages against the author's stated intent; market, pace, and the ledger of prior issues are out of scope. Both keep the reviewer at arm's length from the author.
+Two sets of prompts decide what reviewers measure against. The publication frame advises a literary agent and judges the foundations against a saleable finished book; prior issues are tracked across reviews. The craft frame advises the author's developmental editor and judges the pages against the author's stated intent; market and the ledger of prior issues are out of scope. Both keep the reviewer at arm's length from the author, both put the author's pace and process out of scope, and neither credits plans that aren't on the page.
 
 The two manuscript skills are named by frame. `/critic:delta`, `/critic:review`, `/critic:downstream`, and `/critic:consult` take the frame from the `frame` setting (default `publication`).
 

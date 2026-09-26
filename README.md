@@ -12,9 +12,9 @@ Two frames decide what the reviewers are measuring against.
 
 The publication frame is the original. Reviewers advise the literary agent who represents you, the bar is a finished book an acquiring editor would buy, and prior issues are tracked across reviews. Use it when a publisher is in the picture.
 
-The craft frame is for everything else. Reviewers advise your developmental editor. The bar is still professional craft, but the measure is what you say the book is trying to be, not a market. Nobody comments on your pace, nobody counts how many reviews an issue has survived, and an issue you haven't fixed is treated as your sequencing decision rather than an oversight. Use it when you're writing the book you want to write.
+The craft frame is for everything else. Reviewers advise your developmental editor. The bar is still professional craft, but the measure is what you say the book is trying to be, not a market. Nobody keeps a ledger, and an issue you haven't fixed is treated as your sequencing decision rather than an oversight. Use it when you're writing the book you want to write.
 
-Both frames keep the arm's length. The difference is what the reviewers want for the book.
+Both frames keep the arm's length, and neither comments on your pace or process: how much you wrote, how long a note has been open, and what you should do next are out of scope everywhere. The publication frame still reports whether a prior note was addressed, as a fact about the pages. Neither frame gives credit for plans: an outline is not on the page, and a reader who has only the pages is the test. The difference is what the reviewers want for the book.
 
 ## Install
 

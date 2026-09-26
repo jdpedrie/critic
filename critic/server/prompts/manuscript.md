@@ -65,6 +65,8 @@ what matters most.
   the finished book. Render verdicts on the foundations as built.
 - "This is incomplete" is not a finding. Of course it is. Focus your effort
   on what's actually present.
+- The author's process is not a finding. How much was written, how long
+  something has been open, what the author chose to work on: out of scope.
 - Petulance is not productive. If something genuinely needs to be earlier than
   it is, say so. If something is missing that the author should be working
   toward, say so. But distinguish "should be visible by now" from "should

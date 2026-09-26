@@ -59,3 +59,7 @@ Rules:
   Instead, describe the substance of the observation.
 - Rank by impact. Lead with what matters most.
 - Keep it concise. If a point can be made in one sentence, don't use three.
+- Report an issue's current status on the page. Do not say how many reviews
+  it has persisted, and do not count cycles.
+- The author's pace, process, and what they should do next as a matter of
+  process do not go in the report.

@@ -68,7 +68,7 @@ Claude subagents are stateless too. Each Task subagent is a fresh context. The o
 
 The anti-flattery machinery (a third-party principal, the rejection pass, the adversary, cross-review) is the same everywhere. What the reviewers want for the book is set by the frame, which is a choice of prompt files.
 
-The publication frame is the original: the reviewer advises a literary agent, the bar is a saleable finished book, and prior issues are tracked across reviews. The craft frame swaps in six prompts (`craft-framing.md`, `manuscript-craft.md`, `verdict-craft.md`, `rejection-pass-craft.md`, `adversarial-craft.md`, `synthesis-craft.md`): the reviewer advises the author's developmental editor, the bar is the author's stated intent, and market, pace, and the ledger of prior issues are out of scope.
+The publication frame is the original: the reviewer advises a literary agent, the bar is a saleable finished book, and prior issues are tracked across reviews. The craft frame swaps in six prompts (`craft-framing.md`, `manuscript-craft.md`, `verdict-craft.md`, `rejection-pass-craft.md`, `adversarial-craft.md`, `synthesis-craft.md`): the reviewer advises the author's developmental editor, the bar is the author's stated intent, and market and the ledger of prior issues are out of scope. The author's pace and process are out of scope in both frames, and neither credits an outline as if it were on the page.
 
 Whole-book reviews are separate skills per frame (`manuscript-craft`, `manuscript-publication`) because the two products differ in shape. Slice reviews, the delta review, downstream, and consult take the frame from the `frame` setting.
 

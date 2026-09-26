@@ -37,9 +37,11 @@ The prompts come in two sets that differ in who the reviewer answers to and what
 | Adversary | `adversarial.md` | `adversarial-craft.md` (the frank reader) |
 | Synthesis | `synthesis.md` | `synthesis-craft.md` |
 
-In the publication frame the reviewer is a consultant to the literary agent who represents the author, and the bar is a finished book an acquiring editor would buy. Prior issues are tracked: reviewers are asked whether they were addressed.
+In the publication frame the reviewer is a consultant to the literary agent who represents the author, and the bar is a finished book an acquiring editor would buy. Prior issues are tracked: reviewers are asked whether they were addressed, and report each one's current status on the page, never its history.
 
-In the craft frame the reviewer is a consulting reader for the author's developmental editor. The bar is professional craft; the measure is the author's stated intent from the stage block and the author's note. Market, comparable titles, and acquisition are out of scope, and the framing tells reviewers to disregard a style guide that invites them. The author's pace and process are out of scope. The prior review is context, not a checklist: an unaddressed issue is a sequencing decision, and reviewers must not count cycles, cite prior IDs, or report what was or wasn't addressed.
+The author's pace and process are out of scope in both frames. Neither frame comments on how much was written, how many reviews an issue has survived, how the author spends revision time, or what they should do next as a matter of process; and in both, a note is information rather than an instruction, so an unacted-on note is not evidence of anything. Neither frame credits plans: outlines and notes about what comes next are not on the page, and the test is a reader who has only the pages.
+
+In the craft frame the reviewer is a consulting reader for the author's developmental editor. The bar is professional craft; the measure is the author's stated intent from the stage block and the author's note. Market, comparable titles, and acquisition are out of scope, and the framing tells reviewers to disregard a style guide that invites them. The prior review is context, not a checklist: an unaddressed issue is a sequencing decision, and reviewers must not count cycles, cite prior IDs, or report what was or wasn't addressed.
 
 The anti-flattery machinery is the same in both: the reviewer answers to a third party, the rejection pass and the adversary push against the constructive reviews, and cross-review forces the reviewers to check each other. What changes is what they want for the book.
 
@@ -49,13 +51,13 @@ The anti-flattery machinery is the same in both: the reviewer answers to a third
 
 ### agent-framing.md
 
-Used by all reviewers. The publishing-consultant framing. "You're advising a literary agent who has decided to represent this author. Surface issues are out of scope. Focus on structural integrity, narrative momentum, character work, voice, premise delivery." Explicitly says: don't hunt for typos. The agent already decided to represent the author.
+Used by all reviewers. The publishing-consultant framing. "You're advising a literary agent who has decided to represent this author. Surface issues are out of scope. Focus on structural integrity, narrative momentum, character work, voice, premise delivery." Explicitly says: don't hunt for typos. The agent already decided to represent the author, and has told the consultant that the author's schedule is not their concern: review the pages, report a prior issue's status rather than its history, and treat notes as information rather than instructions.
 
 Goes into the system prompt first. Sets the role and the disposition.
 
 ### craft-framing.md
 
-The craft-frame counterpart. "You are a consulting reader evaluating an in-progress manuscript for the developmental editor who works with the author. Nobody here is selling this book." Same stage-block calibration as `agent-framing.md`, then the craft-frame contract: market and process out of scope, the prior review is context and not a checklist, rebuttals are decisions. Kindness that hides a problem is a disservice.
+The craft-frame counterpart. "You are a consulting reader evaluating an in-progress manuscript for the developmental editor who works with the author. Nobody here is selling this book." Same stage-block calibration as `agent-framing.md`, plus "calibration is not credit": plans and outlines are not on the page, and the test is a reader who owes the author nothing. Then the craft-frame contract: market and process out of scope, the prior review is context and not a checklist, rebuttals are decisions. Kindness that hides a problem is a disservice.
 
 Goes first in every craft-frame system prompt.
 
@@ -67,7 +69,7 @@ Used by `/critic:manuscript-publication`. Goes after `agent-framing.md` in the s
 
 ### manuscript-craft.md
 
-The craft-frame manuscript body. Same six whole-book sections (foundations, pacing, character work, threads, tone, prose), preceded by a `## The changes` section that appears only when the input carries a changes block or an author's note: what the author set out to do, did it land, is the new material good on its own terms against the manuscript's best, what did it cost. Calibration rules add "the author's process is not a finding" and drop the commercial verdict line.
+The craft-frame manuscript body. Same six whole-book sections (foundations, pacing, character work, threads, tone, prose), preceded by a `## The changes` section that appears only when the input carries a changes block or an author's note: what the author set out to do, did it land, is the new material good on its own terms against the manuscript's best, what did it cost. Calibration rules add "do not credit plans" and drop the commercial verdict line.
 
 Used by `/critic:manuscript-craft`.
 
@@ -131,7 +133,7 @@ The synthesis for `/critic:delta`. Sections: the intent, did it land, on its own
 
 ### rejection-pass.md
 
-The rejection pass. Claude's second turn on its own review. The instructions tell the subagent to be blunt: knock out issues that don't survive scrutiny, sharpen the ones that do, surface anything the constructive pass softened.
+The rejection pass. Claude's second turn on its own review. The instructions tell the subagent to be blunt: knock out issues that don't survive scrutiny, sharpen the ones that do, surface anything the constructive pass softened. The verdict question is whether the pages are working, not whether the project is on track, and the author's pace and choices are out of scope.
 
 Used by `/critic:manuscript-publication` as part of the Claude-subagent's combined review + rejection pass. The subagent gets its own review verbatim in context and is told to rebut itself.
 
