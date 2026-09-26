@@ -11,12 +11,23 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// settingsPath resolves where settings live. CRITIC_DATA wins, then the
+// harness-provided CLAUDE_PLUGIN_DATA, then a fixed path under the user's
+// home. There is no relative fallback on purpose: defaulting to the working
+// directory wrote settings to wherever the server happened to be started
+// from, which silently lost them and failed outright when that directory was
+// read-only.
 func settingsPath() string {
-	dir := os.Getenv("CLAUDE_PLUGIN_DATA")
-	if dir == "" {
-		dir = "."
+	for _, env := range []string{"CRITIC_DATA", "CLAUDE_PLUGIN_DATA"} {
+		if dir := os.Getenv(env); dir != "" {
+			return filepath.Join(dir, "settings.json")
+		}
 	}
-	return filepath.Join(dir, "settings.json")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "settings.json")
+	}
+	return filepath.Join(home, ".claude", "plugins", "data", "critic-critic", "settings.json")
 }
 
 func readSettings() (map[string]string, error) {
