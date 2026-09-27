@@ -2,3 +2,7 @@
 PLAN.md
 .DS_Store
 config.yaml*
+
+# editor swap files
+.*.rswp
+.*.swp
